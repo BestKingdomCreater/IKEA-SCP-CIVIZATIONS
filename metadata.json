@@ -1,0 +1,6 @@
+{
+  "name": "SCP-3008: Infinite Store Sandbox",
+  "description": "2D pixel-art God Sandbox and Grand Strategy Civilization Simulator set inside SCP-3008, The Infinite IKEA.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
