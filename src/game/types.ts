@@ -106,6 +106,7 @@ export type DiplomaticStance =
   | 'NEUTRAL'
   | 'WAR'
   | 'ALLIANCE'
+  | 'UNION'
   | 'TRADE_PACT'
   | 'TRUCE'
   | 'EMBARGO'
@@ -187,6 +188,19 @@ export interface Nation {
   activeResearchId?: TechId | null;
   researchPoints?: number;
   researchRate?: number;
+  defeatedStatus?: 'DEPOPULATED' | 'CONQUERED' | 'UNITED';
+  defeatedDay?: number;
+  conqueredByNationId?: number | null;
+  conqueredByName?: string;
+  unitedIntoNationId?: number | null;
+  unitedIntoName?: string;
+  isUnion?: boolean;
+  unionMembers?: string[];
+  unionHubs?: Array<{ x: number; y: number; name: string }>;
+  reproductionProgress?: number;
+  reproductionRate?: number;
+  lastAttackerNationId?: number;
+  lastAttackedDay?: number;
 }
 
 export interface Unit {
@@ -227,6 +241,13 @@ export interface Unit {
   buildProp?: PropType;
   buildVariant?: number;
   isSiegeCart?: boolean;
+  canFoundKingdom?: boolean;
+  settleTimer?: number;
+  insideTimer?: number;
+  insideBuildingIdx?: number;
+  visitCooldown?: number;
+  visitTargetIdx?: number;
+  veteranTitle?: string;
   alive: boolean;
 }
 
@@ -269,7 +290,11 @@ export type NewsCategory =
   | 'STAFF'
   | 'COLONY'
   | 'DIPLOMACY'
-  | 'GOD';
+  | 'GOD'
+  | 'GROWTH'
+  | 'FOUNDING'
+  | 'CONQUEST'
+  | 'UNION';
 
 export interface NewsItem {
   id: number;
@@ -303,10 +328,20 @@ export type ToolId =
   | 'power_heal'
   | 'power_uplift'
   | 'power_peace'
-  | 'power_war';
+  | 'power_war'
+  | 'power_staff_purge'
+  | 'power_time_shift'
+  | 'power_rally_guard'
+  | 'power_restock'
+  | 'power_plague'
+  | 'build_spotlight'
+  | 'build_watchtower'
+  | 'build_wall'
+  | 'build_bistro';
 
 export type BrushSize = 'S' | 'M' | 'L';
 export type SimSpeed = 0 | 1 | 2 | 5 | 10;
+export type WorldPreset = 'standard' | 'warehouse_maze' | 'food_arena' | 'nightmare_dark';
 
 export type ChronicleEventType =
   | 'FOUNDING'
@@ -317,7 +352,10 @@ export type ChronicleEventType =
   | 'COLONY'
   | 'TECH'
   | 'AUDIT'
-  | 'COUP';
+  | 'COUP'
+  | 'GROWTH'
+  | 'FALL'
+  | 'UNION';
 
 export interface ChronicleEntry {
   id: number;
@@ -370,6 +408,18 @@ export interface HudSnapshot {
   auditNight?: boolean;
 }
 
+export interface InspectedBuilding {
+  idx: number;
+  tx: number;
+  ty: number;
+  prop: PropType;
+  hp: number;
+  maxHp: number;
+  ownerId: number;
+  occupants: Array<{ id: number; name: string; role: SurvivorRole }>;
+  disabled?: boolean;
+}
+
 export interface InspectTarget {
   type: 'unit' | 'nation';
   unitId?: number;
@@ -380,6 +430,8 @@ export interface GeminiDiplomaticAction {
   type:
     | 'DECLARE_WAR'
     | 'FORM_ALLIANCE'
+    | 'FORM_UNION'
+    | 'UNITE_KINGDOMS'
     | 'PEACE_TREATY'
     | 'TRADE_PACT'
     | 'DEMAND_TRIBUTE'

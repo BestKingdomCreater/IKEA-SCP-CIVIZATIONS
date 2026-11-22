@@ -1,10 +1,12 @@
 import React from 'react';
-import { X } from 'lucide-react';
+import { Award, Crosshair, Home, X } from 'lucide-react';
 import { Nation, SurvivorRole, Unit, UnitKind } from '../game/types';
 
 interface InspectUnitModalProps {
   unit: Unit;
   nation?: Nation;
+  isFollowing: boolean;
+  onToggleFollow: () => void;
   onClose: () => void;
   onOpenNation: (nationId: number) => void;
 }
@@ -24,6 +26,8 @@ const ROLE_NAMES: Record<SurvivorRole, string> = {
 export const InspectUnitModal: React.FC<InspectUnitModalProps> = ({
   unit,
   nation,
+  isFollowing,
+  onToggleFollow,
   onClose,
   onOpenNation,
 }) => {
@@ -36,23 +40,53 @@ export const InspectUnitModal: React.FC<InspectUnitModalProps> = ({
         : isStaff
           ? 'SCP-3008-2 Entity'
           : ROLE_NAMES[unit.role];
+  const isInsideBuilding = (unit.insideTimer ?? 0) > 0;
 
   return (
     <div className="pointer-events-auto fixed inset-x-4 bottom-20 sm:inset-x-auto sm:left-4 sm:bottom-20 z-40 w-auto sm:w-[300px] max-h-[85vh] overflow-y-auto bg-[#11161f]/96 backdrop-blur-md border border-slate-700 rounded-xl shadow-2xl p-4 text-xs text-slate-200">
       <div className="flex items-start justify-between gap-2 pb-2.5 border-b border-slate-800">
-        <div>
-          <h3 className="font-display text-base font-bold text-white">{unit.name}</h3>
+        <div className="min-w-0">
+          <h3 className="font-display text-base font-bold text-white truncate">{unit.name}</h3>
           <p className="text-[11px] text-slate-400">{kindLabel}</p>
         </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="p-2 -mr-1 -mt-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800"
-          aria-label="Close Inspector"
-        >
-          <X className="w-4 h-4" />
-        </button>
+        <div className="flex items-center gap-1 shrink-0">
+          <button
+            type="button"
+            onClick={onToggleFollow}
+            className={`px-2 py-1 rounded-lg border text-[11px] font-semibold flex items-center gap-1 transition-colors ${
+              isFollowing
+                ? 'bg-[#0058a3] border-[#ffda1a] text-[#ffda1a]'
+                : 'bg-slate-900 border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800'
+            }`}
+            title={isFollowing ? 'Stop following unit' : 'Follow unit with camera'}
+          >
+            <Crosshair className="w-3 h-3" />
+            <span>{isFollowing ? 'Following' : 'Follow'}</span>
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-2 -mr-1 -mt-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800"
+            aria-label="Close Inspector"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
       </div>
+
+      {unit.veteranTitle && (
+        <div className="mt-2.5 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-950/50 border border-amber-600/60 text-amber-200 text-[11px] font-semibold">
+          <Award className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+          <span>Veteran · {unit.veteranTitle}</span>
+        </div>
+      )}
+
+      {isInsideBuilding && (
+        <div className="mt-2 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-sky-950/50 border border-sky-700/60 text-sky-200 text-[11px]">
+          <Home className="w-3.5 h-3.5 text-sky-300 shrink-0" />
+          <span>Currently inside a kingdom building</span>
+        </div>
+      )}
 
       <div className="pt-3 space-y-2 font-mono-tabular">
         <div className="flex justify-between">

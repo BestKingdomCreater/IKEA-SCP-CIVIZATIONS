@@ -52,6 +52,29 @@ export const NATION_PALETTE: Array<{ name: string; color: string; border: string
   { name: 'Malm Federation', color: '#84cc16', border: '#3f6212', rgb: [132, 204, 22], borderRgb: [63, 98, 18] },
   { name: 'Poäng Commonwealth', color: '#f97316', border: '#9a3412', rgb: [249, 115, 22], borderRgb: [154, 52, 18] },
   { name: 'Kallax Freeholds', color: '#6366f1', border: '#3730a3', rgb: [99, 102, 241], borderRgb: [55, 48, 163] },
+  { name: 'Vittsjö Sovereignty', color: '#14b8a6', border: '#115e59', rgb: [20, 184, 166], borderRgb: [17, 94, 89] },
+  { name: 'Hemnes Crown', color: '#eab308', border: '#854d0e', rgb: [234, 179, 8], borderRgb: [133, 77, 14] },
+  { name: 'Ivar Union', color: '#f43f5e', border: '#9f1239', rgb: [244, 63, 94], borderRgb: [159, 18, 57] },
+  { name: 'Ektorp Duchy', color: '#38bdf8', border: '#0369a1', rgb: [56, 189, 248], borderRgb: [3, 105, 161] },
+];
+
+export const SETTLER_KINGDOM_NAMES = [
+  'Vittsjö Free State',
+  'Hemnes Sovereign',
+  'Ivar Commonwealth',
+  'Ektorp Union',
+  'Nordli Principality',
+  'Brimnes Compact',
+  'Tärnö Freehold',
+  'Skogsta Realm',
+  'Råskog Collective',
+  'Älmhult Duchy',
+  'Klippan League',
+  'Lommarp Charter',
+  'Stuva Republic',
+  'Gerton Citadel',
+  'Bestå Sanctuary',
+  'Fjälla Hold',
 ];
 
 export const REBEL_PREFIXES = [

@@ -1,14 +1,17 @@
 import React from 'react';
 import {
   Crown,
+  Flag,
   KeyRound,
   Moon,
   Music,
   Pause,
   Play,
   RotateCcw,
+  Save,
   Settings,
   Sun,
+  Trophy,
   VolumeX,
 } from 'lucide-react';
 import { HudSnapshot, SimSpeed } from '../game/types';
@@ -24,6 +27,9 @@ interface TopHudProps {
   onToggleMusic: () => void;
   onOpenGeminiModal: () => void;
   onOpenSettings: () => void;
+  onOpenSaveLoad: () => void;
+  onOpenRecords: () => void;
+  onOpenCustomKingdom: () => void;
   onToggleSummitLounge: () => void;
   onResetWorld: () => void;
 }
@@ -41,6 +47,9 @@ export const TopHud: React.FC<TopHudProps> = ({
   onToggleMusic,
   onOpenGeminiModal,
   onOpenSettings,
+  onOpenSaveLoad,
+  onOpenRecords,
+  onOpenCustomKingdom,
   onToggleSummitLounge,
   onResetWorld,
 }) => {
@@ -147,6 +156,36 @@ export const TopHud: React.FC<TopHudProps> = ({
           <span className="hidden sm:inline">
             {summitSessionActive ? 'Summit Live' : 'Summit Lounge'}
           </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={onOpenCustomKingdom}
+          className="px-2.5 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-100 font-medium flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+          title="Found Custom Kingdom"
+        >
+          <Flag className="w-3.5 h-3.5 text-[#ffda1a] shrink-0" />
+          <span className="hidden lg:inline">New Kingdom</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={onOpenRecords}
+          className="p-1.5 px-2 rounded-md bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-medium flex items-center gap-1 transition-colors whitespace-nowrap shrink-0"
+          title="Hall of Records & Controls"
+        >
+          <Trophy className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+          <span className="hidden xl:inline">Records</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={onOpenSaveLoad}
+          className="p-1.5 px-2 rounded-md bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-medium flex items-center gap-1 transition-colors whitespace-nowrap shrink-0"
+          title="Save & Load World"
+        >
+          <Save className="w-3.5 h-3.5 text-sky-300 shrink-0" />
+          <span className="hidden xl:inline">Saves</span>
         </button>
 
         <button

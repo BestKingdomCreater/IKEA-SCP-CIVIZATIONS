@@ -1,10 +1,14 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { CustomKingdomModal } from './components/CustomKingdomModal';
 import { GeminiKeyModal } from './components/GeminiKeyModal';
+import { HallOfRecordsModal } from './components/HallOfRecordsModal';
+import { InspectBuildingModal } from './components/InspectBuildingModal';
 import { InspectUnitModal } from './components/InspectUnitModal';
 import { Minimap } from './components/Minimap';
 import { NationPanel } from './components/NationPanel';
 import { NewsTicker } from './components/NewsTicker';
 import { ResearchTreeModal } from './components/ResearchTreeModal';
+import { SaveLoadModal } from './components/SaveLoadModal';
 import { SettingsModal } from './components/SettingsModal';
 import { SummitDurationSec, SummitLoungeModal } from './components/SummitLoungeModal';
 import { TopHud } from './components/TopHud';
@@ -29,14 +33,19 @@ import {
   SummitLoungeMessage,
 } from './game/diplomacy';
 import { SimEngine } from './game/engine';
+import { SerializedWorldV1 } from './game/saveLoad';
 import { soundFX } from './game/sound';
 import {
   BrushSize,
+  CustomKingdomConfig,
+  DiplomaticStance,
   HudSnapshot,
+  InspectedBuilding,
   SimSpeed,
   TechId,
   ToolId,
   Unit,
+  WorldPreset,
 } from './game/types';
 
 interface PointerPos {
@@ -61,6 +70,11 @@ export default function App() {
   const [geminiKey, setGeminiKey] = useState<string>(() => getStoredGeminiKey());
   const [showGeminiModal, setShowGeminiModal] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [showSaveLoadModal, setShowSaveLoadModal] = useState(false);
+  const [showRecordsModal, setShowRecordsModal] = useState(false);
+  const [showCustomKingdomModal, setShowCustomKingdomModal] = useState(false);
+  const [pendingCustomKingdom, setPendingCustomKingdom] = useState<CustomKingdomConfig | null>(null);
+  const [placementError, setPlacementError] = useState<string | null>(null);
 
   // Summit Lounge State (<= 5 min Gemini API / Heuristic Roundtable)
   const [showSummitLounge, setShowSummitLounge] = useState(false);
@@ -76,6 +90,9 @@ export default function App() {
   const [selectedNationId, setSelectedNationId] = useState<number | null>(null);
   const [showResearchTree, setShowResearchTree] = useState(false);
   const [inspectedUnit, setInspectedUnit] = useState<Unit | null>(null);
+  const [inspectedBuilding, setInspectedBuilding] = useState<InspectedBuilding | null>(null);
+  const [followUnitId, setFollowUnitId] = useState<number | null>(null);
+  const [worldPreset, setWorldPreset] = useState<WorldPreset>('standard');
   const [viewSize, setViewSize] = useState({ w: 1280, h: 720 });
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -85,6 +102,9 @@ export default function App() {
   const activeToolRef = useRef<ToolId>(activeTool);
   const brushSizeRef = useRef<BrushSize>(brushSize);
   const geminiKeyRef = useRef<string>(geminiKey);
+  const followUnitIdRef = useRef<number | null>(followUnitId);
+  const inspectedUnitIdRef = useRef<number | null>(null);
+  const inspectedBuildingLocRef = useRef<{ tx: number; ty: number } | null>(null);
   const summitInFlightRef = useRef<boolean>(false);
   const loungeTurnInFlightRef = useRef<boolean>(false);
   const loungeAbortRef = useRef<AbortController | null>(null);
@@ -93,10 +113,18 @@ export default function App() {
   const summitDurationRef = useRef<SummitDurationSec>(summitDurationSec);
   const summitSessionActiveRef = useRef<boolean>(summitSessionActive);
   const nextTurnCooldownRef = useRef<number>(0);
+  const pendingCustomKingdomRef = useRef<CustomKingdomConfig | null>(null);
+
+  pendingCustomKingdomRef.current = pendingCustomKingdom;
 
   activeToolRef.current = activeTool;
   brushSizeRef.current = brushSize;
   geminiKeyRef.current = geminiKey;
+  followUnitIdRef.current = followUnitId;
+  inspectedUnitIdRef.current = inspectedUnit ? inspectedUnit.id : null;
+  inspectedBuildingLocRef.current = inspectedBuilding
+    ? { tx: inspectedBuilding.tx, ty: inspectedBuilding.ty }
+    : null;
   summitMessagesRef.current = summitMessages;
   summitRemainingRef.current = summitRemainingSec;
   summitDurationRef.current = summitDurationSec;
@@ -114,6 +142,18 @@ export default function App() {
     cartCount: 0,
     nations: [],
     news: [],
+    chronicle: [],
+    records: {
+      totalWarsDeclared: 0,
+      totalPeaceTreaties: 0,
+      totalBuildingsBuilt: 0,
+      totalTechsUnlocked: 0,
+      totalStaffSlain: 0,
+      totalSurvDeaths: 0,
+      peakPopulation: 0,
+      peakPopDay: 1,
+      auditNightsSurvived: 0,
+    },
     paused: false,
     speed: 1,
     summitActive: false,
@@ -345,6 +385,8 @@ export default function App() {
     setShowSummitLounge(true);
     setSelectedNationId(null);
     setInspectedUnit(null);
+    setInspectedBuilding(null);
+    setFollowUnitId(null);
     panToTile(SUMMIT_X + 0.5, SUMMIT_Y + 0.5);
   }, [panToTile]);
 
@@ -354,6 +396,8 @@ export default function App() {
       if (next) {
         setSelectedNationId(null);
         setInspectedUnit(null);
+        setInspectedBuilding(null);
+        setFollowUnitId(null);
         panToTile(SUMMIT_X + 0.5, SUMMIT_Y + 0.5);
       }
       return next;
@@ -399,21 +443,35 @@ export default function App() {
   useEffect(() => {
     const onEscape = (e: KeyboardEvent) => {
       if (e.code !== 'Escape') return;
-      if (showGeminiModal) setShowGeminiModal(false);
+      if (pendingCustomKingdom) {
+        setPendingCustomKingdom(null);
+        setPlacementError(null);
+      } else if (showCustomKingdomModal) setShowCustomKingdomModal(false);
+      else if (showSaveLoadModal) setShowSaveLoadModal(false);
+      else if (showRecordsModal) setShowRecordsModal(false);
+      else if (showGeminiModal) setShowGeminiModal(false);
       else if (showSettingsModal) setShowSettingsModal(false);
       else if (showResearchTree) setShowResearchTree(false);
       else if (showSummitLounge) setShowSummitLounge(false);
-      else if (inspectedUnit) setInspectedUnit(null);
+      else if (inspectedUnit) {
+        setInspectedUnit(null);
+        setFollowUnitId(null);
+      } else if (inspectedBuilding) setInspectedBuilding(null);
       else if (selectedNationId !== null) setSelectedNationId(null);
     };
     window.addEventListener('keydown', onEscape);
     return () => window.removeEventListener('keydown', onEscape);
   }, [
+    pendingCustomKingdom,
+    showCustomKingdomModal,
+    showSaveLoadModal,
+    showRecordsModal,
     showGeminiModal,
     showSettingsModal,
     showResearchTree,
     showSummitLounge,
     inspectedUnit,
+    inspectedBuilding,
     selectedNationId,
   ]);
 
@@ -434,7 +492,7 @@ export default function App() {
     const keysDown = new Set<string>();
     const onKeyDown = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement | null)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
       if (e.code === 'Space') {
         e.preventDefault();
         eng.paused = !eng.paused;
@@ -485,26 +543,57 @@ export default function App() {
       }
 
       const panSpeed = (520 / eng.camera.zoom) * rawDt;
+      const manualKeyPan =
+        keysDown.has('KeyW') ||
+        keysDown.has('ArrowUp') ||
+        keysDown.has('KeyS') ||
+        keysDown.has('ArrowDown') ||
+        keysDown.has('KeyA') ||
+        keysDown.has('ArrowLeft') ||
+        keysDown.has('KeyD') ||
+        keysDown.has('ArrowRight');
+      if (manualKeyPan && followUnitIdRef.current !== null) {
+        setFollowUnitId(null);
+      }
       if (keysDown.has('KeyW') || keysDown.has('ArrowUp')) eng.camera.y -= panSpeed;
       if (keysDown.has('KeyS') || keysDown.has('ArrowDown')) eng.camera.y += panSpeed;
       if (keysDown.has('KeyA') || keysDown.has('ArrowLeft')) eng.camera.x -= panSpeed;
       if (keysDown.has('KeyD') || keysDown.has('ArrowRight')) eng.camera.x += panSpeed;
 
-      eng.camera.x = Math.max(0, Math.min(WORLD_PX_W, eng.camera.x));
-      eng.camera.y = Math.max(0, Math.min(WORLD_PX_H, eng.camera.y));
-
       if (!eng.paused && eng.speed > 0) {
-        accumulator += rawDt * eng.speed;
+        accumulator = Math.min(FIXED_DT * 3, accumulator + rawDt * eng.speed);
+        const simBudgetMs = fpsSmooth < 45 ? 5.5 : 8.5;
+        const simStart = performance.now();
         let steps = 0;
         while (accumulator >= FIXED_DT && steps < MAX_SUBSTEPS) {
           eng.step(FIXED_DT);
           accumulator -= FIXED_DT;
           steps++;
+          if (steps >= 1 && performance.now() - simStart >= simBudgetMs) {
+            accumulator = Math.min(accumulator, FIXED_DT * 2);
+            break;
+          }
         }
         if (steps >= MAX_SUBSTEPS) {
           accumulator = 0;
         }
       }
+      eng.particleScale = fpsSmooth < 45 ? 0.35 : eng.isMobileViewport ? 0.5 : 1.0;
+
+      if (followUnitIdRef.current !== null) {
+        const targetUnit = eng.units.find((u) => u.alive && u.id === followUnitIdRef.current);
+        if (targetUnit) {
+          const targetPxX = targetUnit.x * TILE_SIZE;
+          const targetPxY = targetUnit.y * TILE_SIZE;
+          eng.camera.x += (targetPxX - eng.camera.x) * Math.min(1, rawDt * 12);
+          eng.camera.y += (targetPxY - eng.camera.y) * Math.min(1, rawDt * 12);
+        } else {
+          setFollowUnitId(null);
+        }
+      }
+
+      eng.camera.x = Math.max(0, Math.min(WORLD_PX_W, eng.camera.x));
+      eng.camera.y = Math.max(0, Math.min(WORLD_PX_H, eng.camera.y));
 
       const canvas = canvasRef.current;
       if (canvas) {
@@ -521,6 +610,14 @@ export default function App() {
       if (now - lastHudSync >= 300) {
         lastHudSync = now;
         setHud(eng.getHudSnapshot(fpsSmooth));
+        if (inspectedUnitIdRef.current !== null) {
+          const liveUnit = eng.units.find((u) => u.alive && u.id === inspectedUnitIdRef.current);
+          setInspectedUnit(liveUnit ? { ...liveUnit } : null);
+        }
+        if (inspectedBuildingLocRef.current) {
+          const { tx, ty } = inspectedBuildingLocRef.current;
+          setInspectedBuilding(eng.getBuildingAtTile(tx, ty));
+        }
       }
 
       rafId = requestAnimationFrame(frame);
@@ -596,14 +693,21 @@ export default function App() {
       if (sx >= b.sx && sx <= b.sx + b.w && sy >= b.sy && sy <= b.sy + b.h) {
         setSelectedNationId(b.nationId);
         setInspectedUnit(null);
+        setInspectedBuilding(null);
+        setFollowUnitId(null);
         return;
       }
     }
 
-    // 3. Check nearest unit within 3 tiles
+    // 3. Check building at exact clicked tile
+    const bldg = eng.getBuildingAtTile(tx, ty);
+    const unitSearchRad = bldg ? 1.35 : 3;
+
+    // 4. Check nearest outdoor unit
     let best: Unit | null = null;
-    let bestD = 9;
-    eng.spatialHash.queryRadius(eng.units, tx, ty, 3, (u, _idx, dSq) => {
+    let bestD = unitSearchRad * unitSearchRad;
+    eng.spatialHash.queryRadius(eng.units, tx, ty, unitSearchRad, (u, _idx, dSq) => {
+      if ((u.insideTimer ?? 0) > 0) return;
       if (dSq < bestD) {
         bestD = dSq;
         best = u;
@@ -612,17 +716,28 @@ export default function App() {
 
     if (best) {
       setInspectedUnit({ ...(best as Unit) });
+      setInspectedBuilding(null);
       setSelectedNationId(null);
       return;
     }
 
-    // 4. Check territory tile ownership
+    if (bldg) {
+      setInspectedBuilding(bldg);
+      setInspectedUnit(null);
+      setSelectedNationId(null);
+      setFollowUnitId(null);
+      return;
+    }
+
+    // 5. Check territory tile ownership
     const gx = Math.max(0, Math.min(GRID_W - 1, tx | 0));
     const gy = Math.max(0, Math.min(GRID_H - 1, ty | 0));
     const terr = eng.territory[gy * GRID_W + gx];
     if (terr >= 0) {
       setSelectedNationId(terr);
       setInspectedUnit(null);
+      setInspectedBuilding(null);
+      setFollowUnitId(null);
     }
   };
 
@@ -664,6 +779,8 @@ export default function App() {
         if (pos.sx >= b.sx && pos.sx <= b.sx + b.w && pos.sy >= b.sy && pos.sy <= b.sy + b.h) {
           setSelectedNationId(b.nationId);
           setInspectedUnit(null);
+          setInspectedBuilding(null);
+          setFollowUnitId(null);
           return;
         }
       }
@@ -671,9 +788,26 @@ export default function App() {
       const isRightOrMiddle = e.button === 1 || e.button === 2;
       const tool = activeToolRef.current;
 
+      if (pendingCustomKingdomRef.current && !isRightOrMiddle) {
+        const res = eng.spawnCustomKingdom(pendingCustomKingdomRef.current, pos.tx, pos.ty);
+        if (res.ok && res.nation) {
+          setPendingCustomKingdom(null);
+          setPlacementError(null);
+          setSelectedNationId(res.nation.id);
+          setInspectedUnit(null);
+          setInspectedBuilding(null);
+          setFollowUnitId(null);
+          setHud(eng.getHudSnapshot(hud.fps));
+        } else {
+          setPlacementError(res.error || 'Choose an open aisle tile away from existing capitals.');
+        }
+        return;
+      }
+
       if (isRightOrMiddle || tool === 'pan') {
         isPanningMouseRef.current = true;
         lastPanCenterRef.current = { x: e.clientX, y: e.clientY };
+        setFollowUnitId(null);
         return;
       }
 
@@ -744,9 +878,14 @@ export default function App() {
           tool === 'power_war' ||
           tool === 'power_uplift' ||
           tool === 'power_meteor' ||
-          tool === 'power_lightning';
+          tool === 'power_lightning' ||
+          tool === 'power_time_shift' ||
+          tool === 'power_restock' ||
+          tool === 'build_spotlight' ||
+          tool === 'build_watchtower' ||
+          tool === 'build_bistro';
         if (isSingleTapPower) return;
-        const throttleMs = tool.startsWith('paint_') ? 25 : 110;
+        const throttleMs = tool.startsWith('paint_') || tool === 'build_wall' ? 25 : 110;
         if (now - lastPaintTimeRef.current >= throttleMs) {
           lastPaintTimeRef.current = now;
           const pos = screenToWorldTile(e.clientX, e.clientY);
@@ -814,11 +953,11 @@ export default function App() {
 
   const selectedNation =
     selectedNationId !== null
-      ? hud.nations.find((n) => n.id === selectedNationId && n.alive)
+      ? hud.nations.find((n) => n.id === selectedNationId)
       : undefined;
 
   useEffect(() => {
-    if (!selectedNation && showResearchTree) {
+    if ((!selectedNation || !selectedNation.alive) && showResearchTree) {
       setShowResearchTree(false);
     }
   }, [selectedNation, showResearchTree]);
@@ -865,15 +1004,23 @@ export default function App() {
         }}
         onOpenGeminiModal={() => setShowGeminiModal(true)}
         onOpenSettings={() => setShowSettingsModal(true)}
+        onOpenSaveLoad={() => setShowSaveLoadModal(true)}
+        onOpenRecords={() => setShowRecordsModal(true)}
+        onOpenCustomKingdom={() => {
+          setPlacementError(null);
+          setShowCustomKingdomModal(true);
+        }}
         onToggleSummitLounge={handleToggleSummitLounge}
         onResetWorld={() => {
           finishSummitLoungeSession();
           setSummitMessages([]);
           setSummitError(null);
           if (engineRef.current) {
-            engineRef.current.resetWorld();
+            engineRef.current.resetWorld(worldPreset);
             setSelectedNationId(null);
             setInspectedUnit(null);
+            setInspectedBuilding(null);
+            setFollowUnitId(null);
             setHud(engineRef.current.getHudSnapshot(hud.fps));
           }
         }}
@@ -897,10 +1044,33 @@ export default function App() {
           }`}
         />
 
+        {/* Custom Kingdom Placement Banner */}
+        {pendingCustomKingdom && (
+          <div className="pointer-events-auto absolute top-3 left-1/2 -translate-x-1/2 z-30 flex items-center gap-3 px-4 py-2 rounded-xl bg-[#11161f]/95 border border-[#ffda1a] shadow-2xl text-xs text-slate-100">
+            <div>
+              <div className="font-semibold">
+                Click any open aisle tile to found{' '}
+                <span style={{ color: pendingCustomKingdom.color }}>{pendingCustomKingdom.name}</span>
+              </div>
+              {placementError && <div className="text-[11px] text-rose-300 mt-0.5">{placementError}</div>}
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setPendingCustomKingdom(null);
+                setPlacementError(null);
+              }}
+              className="min-h-[36px] px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-semibold shrink-0"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
+
         {/* Top-Right Side News Ticker */}
         {!showSummitLounge && (
           <div className="pointer-events-none absolute top-3 right-3 z-20 flex flex-col items-end gap-2">
-            <NewsTicker news={hud.news} isMobile={isPhone} />
+            <NewsTicker news={hud.news} chronicle={hud.chronicle} isMobile={isPhone} />
           </div>
         )}
 
@@ -924,6 +1094,8 @@ export default function App() {
             onSelectNation={(nid) => {
               setSelectedNationId(nid);
               setInspectedUnit(null);
+              setInspectedBuilding(null);
+              setFollowUnitId(null);
             }}
             onPanToTile={panToTile}
             onOpenSummitLounge={handleOpenSummitLounge}
@@ -943,11 +1115,34 @@ export default function App() {
             onWhisper={handleWhisper}
             onSelectNation={(nid) => setSelectedNationId(nid)}
             onOpenResearchTree={() => setShowResearchTree(true)}
+            onRenameNation={(nid, newName) => {
+              if (!engineRef.current) return;
+              engineRef.current.renameNation(nid, newName);
+              setHud(engineRef.current.getHudSnapshot(hud.fps));
+            }}
+            onSpawnUnitsForNation={(nid, unitType) => {
+              if (!engineRef.current) return;
+              soundFX.playChime(580, 0.06);
+              engineRef.current.godSpawnForNation(nid, unitType);
+              setHud(engineRef.current.getHudSnapshot(hud.fps));
+            }}
+            onSetDiplomacy={(aId, bId, stance: DiplomaticStance) => {
+              if (!engineRef.current) return;
+              soundFX.playPower();
+              engineRef.current.godSetDiplomacy(aId, bId, stance);
+              setHud(engineRef.current.getHudSnapshot(hud.fps));
+            }}
+            onUniteNations={(aId, bId) => {
+              if (!engineRef.current) return;
+              soundFX.playPower();
+              engineRef.current.godUniteNations(aId, bId);
+              setHud(engineRef.current.getHudSnapshot(hud.fps));
+            }}
           />
         )}
 
         {/* Nation Research Tree Modal */}
-        {showResearchTree && selectedNation && (
+        {showResearchTree && selectedNation && selectedNation.alive && (
           <ResearchTreeModal
             nation={selectedNation}
             onFocusTech={(techId: TechId) => {
@@ -1000,10 +1195,58 @@ export default function App() {
           <InspectUnitModal
             unit={inspectedUnit}
             nation={inspectedUnitNation}
-            onClose={() => setInspectedUnit(null)}
+            isFollowing={followUnitId === inspectedUnit.id}
+            onToggleFollow={() => {
+              setFollowUnitId((prev) => (prev === inspectedUnit.id ? null : inspectedUnit.id));
+            }}
+            onClose={() => {
+              setInspectedUnit(null);
+              setFollowUnitId(null);
+            }}
             onOpenNation={(nid) => {
               setInspectedUnit(null);
+              setFollowUnitId(null);
               setSelectedNationId(nid);
+            }}
+          />
+        )}
+
+        {/* Inspect Building Modal */}
+        {inspectedBuilding && (
+          <InspectBuildingModal
+            building={inspectedBuilding}
+            nation={
+              inspectedBuilding.ownerId >= 0
+                ? hud.nations.find((n) => n.id === inspectedBuilding.ownerId)
+                : undefined
+            }
+            onClose={() => setInspectedBuilding(null)}
+            onOpenNation={(nid) => {
+              setInspectedBuilding(null);
+              setSelectedNationId(nid);
+            }}
+            onInspectOccupant={(unitId) => {
+              const u = engineRef.current?.units.find((unit) => unit.alive && unit.id === unitId);
+              if (u) {
+                setInspectedBuilding(null);
+                setInspectedUnit({ ...u });
+                setFollowUnitId(u.id);
+              }
+            }}
+            onRepair={(idx) => {
+              if (!engineRef.current) return;
+              engineRef.current.repairBuildingAt(idx);
+              setInspectedBuilding(
+                engineRef.current.getBuildingAtTile(inspectedBuilding.tx, inspectedBuilding.ty)
+              );
+              soundFX.playPower();
+            }}
+            onDemolish={(idx) => {
+              if (!engineRef.current) return;
+              engineRef.current.demolishBuildingAt(idx);
+              setInspectedBuilding(null);
+              setHud(engineRef.current.getHudSnapshot(hud.fps));
+              soundFX.playChime(180, 0.12, 'sawtooth');
             }}
           />
         )}
@@ -1037,27 +1280,98 @@ export default function App() {
       {showSettingsModal && (
         <SettingsModal
           maxPop={maxPop}
+          worldPreset={worldPreset}
           soundEnabled={soundEnabled}
           musicEnabled={musicEnabled}
           isMobile={isPhone}
           onChangeMaxPop={setMaxPop}
+          onChangeWorldPreset={(preset) => setWorldPreset(preset)}
           onToggleSound={() => setSoundEnabled((s) => !s)}
           onToggleMusic={() => {
             soundFX.unlockAndStartMusic();
             setMusicEnabled((m) => !m);
           }}
-          onResetWorld={() => {
+          onResetWorld={(preset) => {
             finishSummitLoungeSession();
             setSummitMessages([]);
             setSummitError(null);
             if (engineRef.current) {
-              engineRef.current.resetWorld();
+              engineRef.current.resetWorld(preset ?? worldPreset);
               setSelectedNationId(null);
               setInspectedUnit(null);
+              setInspectedBuilding(null);
+              setFollowUnitId(null);
               setHud(engineRef.current.getHudSnapshot(hud.fps));
             }
           }}
           onClose={() => setShowSettingsModal(false)}
+        />
+      )}
+
+      {/* Save & Load World Modal */}
+      {showSaveLoadModal && (
+        <SaveLoadModal
+          currentDay={hud.day}
+          onExportWorld={(label) => (engineRef.current ? engineRef.current.exportWorldState(label) : null)}
+          onImportWorld={(data: SerializedWorldV1) => {
+            if (!engineRef.current) return;
+            finishSummitLoungeSession();
+            setSummitMessages([]);
+            setSummitError(null);
+            engineRef.current.importWorldState(data);
+            setSelectedNationId(null);
+            setInspectedUnit(null);
+            setInspectedBuilding(null);
+            setFollowUnitId(null);
+            setHud(engineRef.current.getHudSnapshot(hud.fps));
+          }}
+          onClose={() => setShowSaveLoadModal(false)}
+        />
+      )}
+
+      {/* Hall of Records Modal */}
+      {showRecordsModal && (
+        <HallOfRecordsModal
+          day={hud.day}
+          records={hud.records}
+          nations={hud.nations}
+          onSelectNation={(nid) => {
+            setSelectedNationId(nid);
+            setInspectedUnit(null);
+            setInspectedBuilding(null);
+            setFollowUnitId(null);
+          }}
+          onClose={() => setShowRecordsModal(false)}
+        />
+      )}
+
+      {/* Custom Kingdom Creator Modal */}
+      {showCustomKingdomModal && (
+        <CustomKingdomModal
+          onStartMapPlacement={(config) => {
+            setShowCustomKingdomModal(false);
+            setPlacementError(null);
+            setPendingCustomKingdom(config);
+          }}
+          onAutoPlace={(config) => {
+            const eng = engineRef.current;
+            if (!eng) return { ok: false, error: 'Simulation unavailable.' };
+            const spot = eng.findOpenKingdomSpot();
+            if (!spot) {
+              return { ok: false, error: 'No open aisle wing found far enough from existing capitals.' };
+            }
+            const res = eng.spawnCustomKingdom(config, spot.tx, spot.ty);
+            if (res.ok && res.nation) {
+              panToTile(res.nation.capitalX, res.nation.capitalY);
+              setSelectedNationId(res.nation.id);
+              setInspectedUnit(null);
+              setInspectedBuilding(null);
+              setFollowUnitId(null);
+              setHud(eng.getHudSnapshot(hud.fps));
+            }
+            return res;
+          }}
+          onClose={() => setShowCustomKingdomModal(false)}
         />
       )}
     </div>

@@ -19,6 +19,7 @@ import {
   Unit,
   UnitKind,
   UnitTrait,
+  WorldPreset,
 } from './types';
 
 export function randomName(): string {
@@ -49,7 +50,10 @@ export interface WorldGenResult {
   nextNationId: number;
 }
 
-export function generateIkeaWorld(maxUnitsCap: number): WorldGenResult {
+export function generateIkeaWorld(
+  maxUnitsCap: number,
+  preset: WorldPreset = 'standard'
+): WorldGenResult {
   const total = GRID_W * GRID_H;
   const biome = new Uint8Array(total);
   const prop = new Uint8Array(total);
@@ -76,16 +80,33 @@ export function generateIkeaWorld(maxUnitsCap: number): WorldGenResult {
   const blocksX = Math.ceil(GRID_W / blockW);
   const blocksY = Math.ceil(GRID_H / blockH);
 
-  // Assign sector types to blocks
+  // Assign sector types to blocks according to chosen WorldPreset
   const blockBiomes: BiomeType[][] = [];
   for (let by = 0; by < blocksY; by++) {
     blockBiomes[by] = [];
     for (let bx = 0; bx < blocksX; bx++) {
       const r = Math.random();
-      if (r < 0.34) blockBiomes[by][bx] = BiomeType.SHOWROOM;
-      else if (r < 0.72) blockBiomes[by][bx] = BiomeType.WAREHOUSE;
-      else if (r < 0.85) blockBiomes[by][bx] = BiomeType.FOOD_COURT;
-      else blockBiomes[by][bx] = BiomeType.DARK_SECTOR;
+      if (preset === 'warehouse_maze') {
+        if (r < 0.62) blockBiomes[by][bx] = BiomeType.WAREHOUSE;
+        else if (r < 0.78) blockBiomes[by][bx] = BiomeType.SHOWROOM;
+        else if (r < 0.9) blockBiomes[by][bx] = BiomeType.FOOD_COURT;
+        else blockBiomes[by][bx] = BiomeType.DARK_SECTOR;
+      } else if (preset === 'food_arena') {
+        const nearCenter = bx >= 2 && bx <= 5 && by >= 1 && by <= 4;
+        if (nearCenter || r < 0.45) blockBiomes[by][bx] = BiomeType.FOOD_COURT;
+        else if (r < 0.78) blockBiomes[by][bx] = BiomeType.SHOWROOM;
+        else blockBiomes[by][bx] = BiomeType.WAREHOUSE;
+      } else if (preset === 'nightmare_dark') {
+        if (r < 0.6) blockBiomes[by][bx] = BiomeType.DARK_SECTOR;
+        else if (r < 0.78) blockBiomes[by][bx] = BiomeType.WAREHOUSE;
+        else if (r < 0.9) blockBiomes[by][bx] = BiomeType.SHOWROOM;
+        else blockBiomes[by][bx] = BiomeType.FOOD_COURT;
+      } else {
+        if (r < 0.34) blockBiomes[by][bx] = BiomeType.SHOWROOM;
+        else if (r < 0.72) blockBiomes[by][bx] = BiomeType.WAREHOUSE;
+        else if (r < 0.85) blockBiomes[by][bx] = BiomeType.FOOD_COURT;
+        else blockBiomes[by][bx] = BiomeType.DARK_SECTOR;
+      }
     }
   }
 

@@ -17,6 +17,8 @@ const GOVERNMENTS = [
 const DIPLOMATIC_ACTIONS = [
   'DECLARE_WAR',
   'FORM_ALLIANCE',
+  'FORM_UNION',
+  'UNITE_KINGDOMS',
   'PEACE_TREATY',
   'TRADE_PACT',
   'DEMAND_TRIBUTE',
@@ -476,7 +478,7 @@ Respond in character (1-2 sentences) and optionally adjust taxRate, newGovernmen
                 diplomaticActionType: {
                   type: Type.STRING,
                   description:
-                    'Optional: DECLARE_WAR, FORM_ALLIANCE, PEACE_TREATY, TRADE_PACT, EMBARGO',
+                    'Optional: DECLARE_WAR, FORM_ALLIANCE, FORM_UNION, UNITE_KINGDOMS, PEACE_TREATY, TRADE_PACT, EMBARGO',
                 },
                 targetNationId: { type: Type.INTEGER },
               },

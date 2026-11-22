@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ChevronDown, ChevronUp, Crown, Eye, Handshake, Shield, Swords } from 'lucide-react';
+import { ChevronDown, ChevronUp, Crown, Eye, Handshake, Shield, Skull, Swords } from 'lucide-react';
 import { SUMMIT_X, SUMMIT_Y } from '../game/constants';
 import { DiplomaticStance, Nation } from '../game/types';
 
@@ -31,6 +31,7 @@ export const WarTracker: React.FC<WarTrackerProps> = ({
   const [collapsed, setCollapsed] = useState<boolean>(isMobile);
 
   const aliveNations = nations.filter((n) => n.alive);
+  const fallenNations = nations.filter((n) => !n.alive);
   const nationById = new Map<number, Nation>(aliveNations.map((n) => [n.id, n]));
 
   const wars: DiplomaticPair[] = [];
@@ -48,6 +49,7 @@ export const WarTracker: React.FC<WarTrackerProps> = ({
       } else if (
         rel.stance === 'TRADE_PACT' ||
         rel.stance === 'ALLIANCE' ||
+        rel.stance === 'UNION' ||
         rel.stance === 'COALITION'
       ) {
         pacts.push({ a, b, stance: rel.stance });
@@ -211,7 +213,11 @@ export const WarTracker: React.FC<WarTrackerProps> = ({
                     </div>
                     <span
                       className={`text-[10px] font-semibold shrink-0 ${
-                        stance === 'TRADE_PACT' ? 'text-sky-400' : 'text-emerald-400'
+                        stance === 'TRADE_PACT'
+                          ? 'text-sky-400'
+                          : stance === 'UNION'
+                            ? 'text-amber-300'
+                            : 'text-emerald-400'
                       }`}
                     >
                       {stance === 'TRADE_PACT' ? 'TRADE' : stance}
@@ -265,6 +271,61 @@ export const WarTracker: React.FC<WarTrackerProps> = ({
               ))}
             </div>
           </div>
+
+          {/* Fallen / Defeated Kingdoms */}
+          {fallenNations.length > 0 && (
+            <div>
+              <div className="flex items-center justify-between text-[11px] font-semibold text-slate-400 mb-1.5">
+                <span className="flex items-center gap-1.5">
+                  <Skull className="w-3.5 h-3.5 text-slate-400" />
+                  <span>Fallen Kingdoms</span>
+                </span>
+                <span className="font-mono-tabular text-slate-500">{fallenNations.length}</span>
+              </div>
+              <div className="space-y-1">
+                {fallenNations.map((n) => (
+                  <div
+                    key={n.id}
+                    className="flex items-center justify-between gap-2 text-[11px] bg-slate-900/40 rounded px-2 py-1 border border-slate-800/70"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => onSelectNation(n.id)}
+                      className="flex items-center gap-1.5 min-w-0 hover:underline text-left"
+                    >
+                      <span className="w-2.5 h-2.5 rounded-sm shrink-0 bg-slate-600" />
+                      <span className="truncate text-slate-400">{n.name}</span>
+                    </button>
+                    <div className="flex items-center gap-1.5 shrink-0 font-mono-tabular">
+                      <span
+                        className={`text-[10px] font-semibold ${
+                          n.defeatedStatus === 'UNITED'
+                            ? 'text-amber-300'
+                            : n.defeatedStatus === 'CONQUERED'
+                              ? 'text-rose-400'
+                              : 'text-slate-400'
+                        }`}
+                      >
+                        {n.defeatedStatus === 'UNITED'
+                          ? 'United'
+                          : n.defeatedStatus === 'CONQUERED'
+                            ? 'Conquered'
+                            : 'Depopulated'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => onPanToTile(n.capitalX, n.capitalY)}
+                        className="text-slate-500 hover:text-slate-200"
+                        title={`View ruins of ${n.name}`}
+                      >
+                        <Eye className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Neutral Summit Lounge */}
           <div className="pt-1 border-t border-slate-800 flex items-center justify-between gap-2">

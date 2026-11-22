@@ -1,24 +1,36 @@
 import React from 'react';
-import { Music, Volume2, VolumeX, X } from 'lucide-react';
+import { Map, Music, Volume2, VolumeX, X } from 'lucide-react';
+import { WorldPreset } from '../game/types';
 
 interface SettingsModalProps {
   maxPop: number;
+  worldPreset: WorldPreset;
   soundEnabled: boolean;
   musicEnabled: boolean;
   isMobile: boolean;
   onChangeMaxPop: (val: number) => void;
+  onChangeWorldPreset: (preset: WorldPreset) => void;
   onToggleSound: () => void;
   onToggleMusic: () => void;
-  onResetWorld: () => void;
+  onResetWorld: (preset?: WorldPreset) => void;
   onClose: () => void;
 }
 
+const PRESET_OPTIONS: Array<{ id: WorldPreset; label: string; desc: string }> = [
+  { id: 'standard', label: 'Infinite Store', desc: 'Balanced aisles, showrooms & food courts' },
+  { id: 'warehouse_maze', label: 'Warehouse Maze', desc: 'Dense shelf corridors & choke points' },
+  { id: 'food_arena', label: 'Food Court Arena', desc: 'Abundant meatballs & fast border wars' },
+  { id: 'nightmare_dark', label: 'Nightmare Dark', desc: 'Sparse lit islands in sprawling Dark Sectors' },
+];
+
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   maxPop,
+  worldPreset,
   soundEnabled,
   musicEnabled,
   isMobile,
   onChangeMaxPop,
+  onChangeWorldPreset,
   onToggleSound,
   onToggleMusic,
   onResetWorld,
@@ -58,6 +70,33 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <span>300</span>
               <span>Default: {isMobile ? '900 (Phone)' : '2,000'}</span>
               <span>3,500</span>
+            </div>
+          </div>
+
+          <div className="space-y-2 py-2.5 border-t border-slate-800">
+            <div className="flex items-center gap-1.5 font-medium text-slate-200">
+              <Map className="w-3.5 h-3.5 text-[#ffda1a]" />
+              <span>Store Map Preset (Next Reset)</span>
+            </div>
+            <div className="grid grid-cols-2 gap-1.5">
+              {PRESET_OPTIONS.map((p) => {
+                const active = worldPreset === p.id;
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => onChangeWorldPreset(p.id)}
+                    className={`p-2 rounded-lg border text-left transition-colors ${
+                      active
+                        ? 'bg-[#0058a3]/80 border-[#ffda1a] text-white'
+                        : 'bg-slate-900 border-slate-800 text-slate-300 hover:bg-slate-800'
+                    }`}
+                  >
+                    <div className="font-semibold text-[11px]">{p.label}</div>
+                    <div className="text-[10px] text-slate-400 leading-tight mt-0.5">{p.desc}</div>
+                  </button>
+                );
+              })}
             </div>
           </div>
 
@@ -102,7 +141,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <button
               type="button"
               onClick={() => {
-                onResetWorld();
+                onResetWorld(worldPreset);
                 onClose();
               }}
               className="min-h-[40px] flex-1 py-2 rounded-lg bg-rose-900/50 hover:bg-rose-800/70 border border-rose-700/70 text-rose-100 font-semibold"

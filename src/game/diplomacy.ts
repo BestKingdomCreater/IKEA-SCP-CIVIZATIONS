@@ -236,6 +236,36 @@ function runHeuristicSummitLoungeTurn(
         },
       };
     }
+  } else if (stance === 'ALLIANCE') {
+    if (payload.history.length >= 2 && Math.random() < 0.48) {
+      return {
+        speakerNationId: speaker.id,
+        dialogue: `Our alliance has kept the Night Staff at bay, ${other.leaderName}. Let us bind our banners into a formal Union Pact with shared defense!`,
+        mood: 'jovial',
+        usedGemini: false,
+        diplomaticAction: {
+          type: 'FORM_UNION',
+          actorNationId: speaker.id,
+          targetNationId: other.id,
+          quote: `Union Pact proclaimed at the Summit Lounge between ${speaker.name} and ${other.name}!`,
+        },
+      };
+    }
+  } else if (stance === 'UNION' && nations.length >= 3 && payload.day >= 3) {
+    if (payload.history.length >= 3 && Math.random() < 0.42) {
+      return {
+        speakerNationId: speaker.id,
+        dialogue: `${other.leaderName}, our peoples already share meatballs, guards, and spotlights. Why stay divided? Let us unite our kingdoms into one Grand Union!`,
+        mood: 'cordial',
+        usedGemini: false,
+        diplomaticAction: {
+          type: 'UNITE_KINGDOMS',
+          actorNationId: speaker.id,
+          targetNationId: other.id,
+          quote: `Act of Union signed at the Summit Lounge: ${speaker.name} & ${other.name} unite as one!`,
+        },
+      };
+    }
   }
 
   const lines = [
@@ -440,9 +470,15 @@ export async function runGodWhisper(
     if (
       parsed.diplomaticActionType &&
       typeof parsed.targetNationId === 'number' &&
-      ['DECLARE_WAR', 'FORM_ALLIANCE', 'PEACE_TREATY', 'TRADE_PACT', 'EMBARGO'].includes(
-        parsed.diplomaticActionType
-      )
+      [
+        'DECLARE_WAR',
+        'FORM_ALLIANCE',
+        'FORM_UNION',
+        'UNITE_KINGDOMS',
+        'PEACE_TREATY',
+        'TRADE_PACT',
+        'EMBARGO',
+      ].includes(parsed.diplomaticActionType)
     ) {
       action = {
         type: parsed.diplomaticActionType as GeminiDiplomaticAction['type'],
@@ -476,7 +512,7 @@ export function runHeuristicDiplomacyTurn(
   onAction: (action: GeminiDiplomaticAction) => void,
   forceAction = false
 ): void {
-  const active = nations.filter((n) => n.alive);
+  const active = nations.filter((n) => n.alive && n.population > 0);
   if (active.length < 2) return;
 
   let emitted = false;
@@ -501,6 +537,7 @@ export function runHeuristicDiplomacyTurn(
         n.id !== top.id &&
         n.overlordId !== top.id &&
         n.relations[top.id]?.stance !== 'ALLIANCE' &&
+        n.relations[top.id]?.stance !== 'UNION' &&
         n.relations[top.id]?.stance !== 'COALITION'
     );
     if (coalMembers.length >= 2) {
@@ -535,27 +572,21 @@ export function runHeuristicDiplomacyTurn(
       };
 
       const dist = Math.hypot(a.capitalX - b.capitalX, a.capitalY - b.capitalY);
+      const aPower = (a.armyCount || 0) * 3 + a.population + a.territoryTiles * 0.25;
+      const bPower = (b.armyCount || 0) * 3 + b.population + b.territoryTiles * 0.25;
 
       if (rel.stance === 'WAR') {
-        if (rel.warExhaustion > 55 || a.warExhaustion > 65 || b.warExhaustion > 65) {
-          if (a.population > b.population * 2.1 && b.population < 16 && Math.random() < 0.45) {
-            emit({
-              type: 'VASSALIZE',
-              actorNationId: a.id,
-              targetNationId: b.id,
-              quote: `Swear fealty to ${a.name}, and your meatballs shall be spared.`,
-            });
-            return;
-          }
-          if (b.population > a.population * 2.1 && a.population < 16 && Math.random() < 0.45) {
-            emit({
-              type: 'VASSALIZE',
-              actorNationId: b.id,
-              targetNationId: a.id,
-              quote: `Bend the knee to ${b.name} and pay your Allen Wrench tribute!`,
-            });
-            return;
-          }
+        const oneSideWinning = aPower > bPower * 1.35 || bPower > aPower * 1.35;
+        const someoneWeakened =
+          a.population <= 10 ||
+          b.population <= 10 ||
+          a.territoryTiles <= 28 ||
+          b.territoryTiles <= 28 ||
+          (a.armyCount || 0) <= 1 ||
+          (b.armyCount || 0) <= 1;
+
+        // Only sign stalemate peace if evenly matched and deeply exhausted; otherwise press for conquest!
+        if (!oneSideWinning && !someoneWeakened && (rel.warExhaustion > 85 || (a.warExhaustion > 88 && b.warExhaustion > 88))) {
           emit({
             type: 'PEACE_TREATY',
             actorNationId: a.id,
@@ -569,12 +600,32 @@ export function runHeuristicDiplomacyTurn(
           a.ideology === 'Expansionist Empire' ||
           a.ideology === 'Iron Fortress' ||
           a.government === 'Iron Dictatorship';
+        const bWeakened = b.population <= 9 || b.territoryTiles <= 26 || (b.armyCount || 0) === 0;
+        const aWeakened = a.population <= 9 || a.territoryTiles <= 26 || (a.armyCount || 0) === 0;
         const merchant =
           a.ideology === 'Merchant Cartel' ||
           b.ideology === 'Merchant Cartel' ||
           a.government === 'Merchant Republic';
 
-        if (merchant && Math.random() < 0.48) {
+        if (bWeakened && aPower > bPower * 1.4 && a.population >= 8 && dist < 165 && Math.random() < 0.55) {
+          emit({
+            type: 'DECLARE_WAR',
+            actorNationId: a.id,
+            targetNationId: b.id,
+            quote: `${b.name}'s defenses are crumbling—seize their aisles now!`,
+          });
+          return;
+        }
+        if (aWeakened && bPower > aPower * 1.4 && b.population >= 8 && dist < 165 && Math.random() < 0.55) {
+          emit({
+            type: 'DECLARE_WAR',
+            actorNationId: b.id,
+            targetNationId: a.id,
+            quote: `${a.name} leaves its borders unguarded—march to victory!`,
+          });
+          return;
+        }
+        if (merchant && Math.random() < 0.45) {
           emit({
             type: 'TRADE_PACT',
             actorNationId: a.id,
@@ -583,7 +634,7 @@ export function runHeuristicDiplomacyTurn(
           });
           return;
         }
-        if (aggressive && dist < 135 && a.population >= 14 && Math.random() < 0.42) {
+        if (aggressive && dist < 140 && a.population >= 10 && Math.random() < 0.46) {
           emit({
             type: 'DECLARE_WAR',
             actorNationId: a.id,
@@ -602,7 +653,7 @@ export function runHeuristicDiplomacyTurn(
           return;
         }
       } else if (rel.stance === 'TRADE_PACT') {
-        if (a.meatballs > 60 && b.meatballs > 60 && Math.random() < 0.25) {
+        if (a.meatballs > 45 && b.meatballs > 45 && Math.random() < 0.3) {
           emit({
             type: 'FORM_ALLIANCE',
             actorNationId: a.id,
@@ -611,8 +662,41 @@ export function runHeuristicDiplomacyTurn(
           });
           return;
         }
+      } else if (rel.stance === 'ALLIANCE') {
+        if (
+          a.happiness >= 52 &&
+          b.happiness >= 52 &&
+          a.meatballs >= 35 &&
+          b.meatballs >= 35 &&
+          Math.random() < 0.34
+        ) {
+          emit({
+            type: 'FORM_UNION',
+            actorNationId: a.id,
+            targetNationId: b.id,
+            quote: `${a.name} and ${b.name} forge an eternal Union Pact to defend every lit aisle!`,
+          });
+          return;
+        }
+      } else if (rel.stance === 'UNION') {
+        if (
+          active.length >= 3 &&
+          day >= 4 &&
+          a.happiness >= 50 &&
+          b.happiness >= 50 &&
+          dist < 175 &&
+          Math.random() < 0.28
+        ) {
+          emit({
+            type: 'UNITE_KINGDOMS',
+            actorNationId: a.id,
+            targetNationId: b.id,
+            quote: `One checkout banner, one united people—${a.name} & ${b.name} merge into a Grand Union!`,
+          });
+          return;
+        }
       } else if (rel.stance === 'EMBARGO' && day >= rel.truceUntilDay) {
-        if (Math.random() < 0.3) {
+        if (Math.random() < 0.38) {
           emit({
             type: 'DECLARE_WAR',
             actorNationId: a.id,
@@ -621,6 +705,23 @@ export function runHeuristicDiplomacyTurn(
           });
           return;
         }
+      }
+    }
+  }
+
+  // 2b. Overlord + Loyal Vassal Constitutional Unification
+  if (active.length >= 3 && day >= 5) {
+    for (const vassal of active) {
+      if (vassal.overlordId === null || vassal.loyalty < 85) continue;
+      const overlord = active.find((n) => n.id === vassal.overlordId);
+      if (overlord && overlord.happiness >= 55 && Math.random() < 0.24) {
+        emit({
+          type: 'UNITE_KINGDOMS',
+          actorNationId: overlord.id,
+          targetNationId: vassal.id,
+          quote: `Loyal ${vassal.name} joins ${overlord.name} as full citizens of a United Union!`,
+        });
+        return;
       }
     }
   }
@@ -639,6 +740,8 @@ export function runHeuristicDiplomacyTurn(
 
     const neutralPair = pairs.find((p) => p.stance === 'NEUTRAL' || p.stance === 'TRUCE');
     const tradePair = pairs.find((p) => p.stance === 'TRADE_PACT');
+    const alliancePair = pairs.find((p) => p.stance === 'ALLIANCE');
+    const unionPair = pairs.find((p) => p.stance === 'UNION');
     const warPair = pairs.find((p) => p.stance === 'WAR');
     const embargoPair = pairs.find((p) => p.stance === 'EMBARGO');
 
@@ -670,6 +773,26 @@ export function runHeuristicDiplomacyTurn(
         actorNationId: tradePair.a.id,
         targetNationId: tradePair.b.id,
         quote: 'From trade partners to sworn allies—we guard the Showroom together!',
+      });
+      return;
+    }
+
+    if (alliancePair && Math.random() < 0.65) {
+      emit({
+        type: 'FORM_UNION',
+        actorNationId: alliancePair.a.id,
+        targetNationId: alliancePair.b.id,
+        quote: 'Our alliance ascends to a Union Pact across the store!',
+      });
+      return;
+    }
+
+    if (unionPair && active.length >= 3 && Math.random() < 0.6) {
+      emit({
+        type: 'UNITE_KINGDOMS',
+        actorNationId: unionPair.a.id,
+        targetNationId: unionPair.b.id,
+        quote: `Historic Summit Act of Union: ${unionPair.a.name} & ${unionPair.b.name} become one realm!`,
       });
       return;
     }

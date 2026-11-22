@@ -1,8 +1,22 @@
-import React, { useState } from 'react';
-import { BookOpen, Crown, Send, Shield, Swords, X } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import {
+  AlertTriangle,
+  BookOpen,
+  Check,
+  Crown,
+  Handshake,
+  Pencil,
+  Send,
+  Shield,
+  Skull,
+  Swords,
+  UserPlus,
+  Users,
+  X,
+} from 'lucide-react';
 import { TECH_TIER_NAMES } from '../game/constants';
 import { RESEARCH_BY_ID } from '../game/research';
-import { Nation } from '../game/types';
+import { DiplomaticStance, Nation } from '../game/types';
 
 interface NationPanelProps {
   nation: Nation;
@@ -12,6 +26,10 @@ interface NationPanelProps {
   onWhisper: (nationId: number, message: string) => Promise<string>;
   onSelectNation: (nationId: number) => void;
   onOpenResearchTree: () => void;
+  onRenameNation: (nationId: number, newName: string) => void;
+  onSpawnUnitsForNation: (nationId: number, unitType: 'citizen' | 'guard') => void;
+  onSetDiplomacy: (aId: number, bId: number, stance: DiplomaticStance) => void;
+  onUniteNations: (aId: number, bId: number) => void;
 }
 
 export const NationPanel: React.FC<NationPanelProps> = ({
@@ -22,10 +40,26 @@ export const NationPanel: React.FC<NationPanelProps> = ({
   onWhisper,
   onSelectNation,
   onOpenResearchTree,
+  onRenameNation,
+  onSpawnUnitsForNation,
+  onSetDiplomacy,
+  onUniteNations,
 }) => {
   const [whisperText, setWhisperText] = useState('');
   const [whisperReply, setWhisperReply] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState(nation.name);
+  const [diploTargetId, setDiploTargetId] = useState<number | null>(null);
+
+  const otherAliveNations = allNations.filter((n) => n.alive && n.id !== nation.id);
+
+  useEffect(() => {
+    setEditingName(false);
+    setNameDraft(nation.name);
+    const firstOther = allNations.find((n) => n.alive && n.id !== nation.id);
+    setDiploTargetId(firstOther ? firstOther.id : null);
+  }, [nation.id, nation.name, allNations]);
 
   const overlord =
     nation.overlordId !== null
@@ -58,19 +92,89 @@ export const NationPanel: React.FC<NationPanelProps> = ({
     <div className="pointer-events-auto fixed inset-x-3 top-14 sm:inset-x-auto sm:left-4 sm:top-16 z-40 w-auto sm:w-[370px] max-h-[85vh] overflow-y-auto bg-[#11161f]/96 backdrop-blur-md border border-slate-700 rounded-xl shadow-2xl p-4 text-xs text-slate-200">
       {/* Header */}
       <div className="flex items-start justify-between gap-3 pb-3 border-b border-slate-800">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span
-              className="w-3.5 h-3.5 rounded-sm shrink-0 border border-white/20"
-              style={{ backgroundColor: nation.color }}
-            />
-            <h2 className="font-display text-lg font-bold text-white truncate">
-              {nation.name}
-            </h2>
-          </div>
+        <div className="min-w-0 flex-1">
+          {editingName ? (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (nameDraft.trim()) {
+                  onRenameNation(nation.id, nameDraft.trim());
+                }
+                setEditingName(false);
+              }}
+              className="flex items-center gap-1.5"
+            >
+              <input
+                type="text"
+                value={nameDraft}
+                maxLength={28}
+                autoFocus
+                onChange={(e) => setNameDraft(e.target.value)}
+                className="flex-1 min-w-0 bg-slate-900 border border-[#ffda1a]/70 rounded px-2 py-1 text-xs font-semibold text-white focus:outline-none"
+              />
+              <button
+                type="submit"
+                className="p-1 rounded bg-[#0058a3] text-white hover:bg-sky-700"
+                title="Save Name"
+              >
+                <Check className="w-3.5 h-3.5" />
+              </button>
+            </form>
+          ) : (
+            <div className="flex items-center gap-2">
+              <span
+                className="w-3.5 h-3.5 rounded-sm shrink-0 border border-white/20"
+                style={{ backgroundColor: nation.alive ? nation.color : '#64748b' }}
+              />
+              <h2 className="font-display text-lg font-bold text-white truncate">
+                {nation.name}
+              </h2>
+              {nation.alive && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNameDraft(nation.name);
+                    setEditingName(true);
+                  }}
+                  className="p-1 rounded text-slate-400 hover:text-white hover:bg-slate-800 shrink-0"
+                  title="Rename Kingdom"
+                >
+                  <Pencil className="w-3 h-3" />
+                </button>
+              )}
+            </div>
+          )}
           <p className="text-[11px] text-slate-400 mt-0.5">
+            {nation.isUnion && (
+              <span className="text-amber-300 font-semibold mr-1.5">Grand Union ·</span>
+            )}
             Tier {nation.techTier}: {TECH_TIER_NAMES[nation.techTier]} · {nation.ideology}
           </p>
+          {nation.isUnion && nation.unionMembers && nation.unionMembers.length > 1 && (
+            <p className="text-[10px] text-amber-200/80 mt-0.5 truncate">
+              Members: {nation.unionMembers.join(' + ')}
+            </p>
+          )}
+          {nation.alive && (
+            <div className="flex items-center gap-1.5 mt-2">
+              <button
+                type="button"
+                onClick={() => onSpawnUnitsForNation(nation.id, 'citizen')}
+                className="px-2 py-1 rounded bg-emerald-950/60 hover:bg-emerald-900/70 border border-emerald-700/70 text-emerald-200 text-[10px] font-semibold flex items-center gap-1"
+              >
+                <UserPlus className="w-3 h-3" />
+                <span>+3 Citizens</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onSpawnUnitsForNation(nation.id, 'guard')}
+                className="px-2 py-1 rounded bg-sky-950/60 hover:bg-sky-900/70 border border-sky-700/70 text-sky-200 text-[10px] font-semibold flex items-center gap-1"
+              >
+                <Shield className="w-3 h-3" />
+                <span>+2 Guards</span>
+              </button>
+            </div>
+          )}
         </div>
         <button
           type="button"
@@ -81,6 +185,67 @@ export const NationPanel: React.FC<NationPanelProps> = ({
           <X className="w-4 h-4" />
         </button>
       </div>
+
+      {/* Defeated / Depopulated / Conquered / United State Banner */}
+      {!nation.alive && (
+        <div
+          className={`mt-3 p-2.5 rounded-lg border space-y-1 ${
+            nation.defeatedStatus === 'UNITED'
+              ? 'bg-amber-950/40 border-amber-700/70 text-amber-200'
+              : nation.defeatedStatus === 'CONQUERED'
+                ? 'bg-rose-950/50 border-rose-800/70 text-rose-200'
+                : 'bg-slate-900/90 border-slate-600/80 text-slate-200'
+          }`}
+        >
+          <div className="flex items-center justify-between gap-2 font-semibold">
+            <span className="flex items-center gap-1.5">
+              {nation.defeatedStatus === 'UNITED' ? (
+                <Crown className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+              ) : nation.defeatedStatus === 'CONQUERED' ? (
+                <Skull className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+              ) : (
+                <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+              )}
+              <span>
+                {nation.defeatedStatus === 'UNITED'
+                  ? 'UNITED · MERGED'
+                  : nation.defeatedStatus === 'CONQUERED'
+                    ? 'DEFEATED · CONQUERED'
+                    : 'DEFEATED · DEPOPULATED'}
+              </span>
+            </span>
+            {nation.defeatedDay !== undefined && (
+              <span className="font-mono-tabular text-[10px] text-slate-400">
+                Day {nation.defeatedDay}
+              </span>
+            )}
+          </div>
+          <p className="text-[11px] text-slate-300 leading-snug">
+            {nation.defeatedStatus === 'UNITED' ? (
+              <>
+                Merged cleanly into{' '}
+                <span className="font-semibold text-amber-200">
+                  {nation.unitedIntoName || 'a Grand Union'}
+                </span>
+                . Citizens, buildings, and research live on under the united banner.
+              </>
+            ) : nation.defeatedStatus === 'CONQUERED' ? (
+              <>
+                Absorbed by{' '}
+                <span className="font-semibold text-white">
+                  {nation.conqueredByName || 'a conquering kingdom'}
+                </span>
+                . 0 living citizens remain.
+              </>
+            ) : (
+              <>
+                0 living citizens remain. Spawning is permanently halted unless a surviving kingdom
+                colonizes or claims its {nation.territoryTiles} abandoned tiles.
+              </>
+            )}
+          </p>
+        </div>
+      )}
 
       {/* Government & Leader */}
       <div className="py-3 border-b border-slate-800 space-y-2">
@@ -169,36 +334,77 @@ export const NationPanel: React.FC<NationPanelProps> = ({
       </div>
 
       {/* Economy & Territory */}
-      <div className="py-3 border-b border-slate-800 grid grid-cols-3 gap-2 font-mono-tabular">
-        <div>
-          <div className="text-[10px] text-slate-400">Meatballs</div>
-          <div className="text-sm font-semibold text-amber-300">{Math.round(nation.meatballs)}</div>
-        </div>
-        <div>
-          <div className="text-[10px] text-slate-400">Wood/Scrap</div>
-          <div className="text-sm font-semibold text-slate-100">{Math.round(nation.scrap)}</div>
-        </div>
-        <div>
-          <div className="text-[10px] text-slate-400">Wrenches</div>
-          <div className="text-sm font-semibold text-sky-300">{Math.round(nation.allenWrenches)}</div>
-        </div>
-        <div>
-          <div className="text-[10px] text-slate-400">Pop / Army Cap</div>
-          <div className="text-sm font-semibold text-emerald-300">
-            {nation.population}/{nation.housingCap}{' '}
-            <span className="text-amber-300">
-              ({nation.armyCount || 0}/{nation.armyCap ?? (nation.armyCount || 0)})
-            </span>
+      <div className="py-3 border-b border-slate-800 space-y-2.5">
+        <div className="grid grid-cols-3 gap-2 font-mono-tabular">
+          <div>
+            <div className="text-[10px] text-slate-400">Meatballs</div>
+            <div className="text-sm font-semibold text-amber-300">{Math.round(nation.meatballs)}</div>
+          </div>
+          <div>
+            <div className="text-[10px] text-slate-400">Wood/Scrap</div>
+            <div className="text-sm font-semibold text-slate-100">{Math.round(nation.scrap)}</div>
+          </div>
+          <div>
+            <div className="text-[10px] text-slate-400">Wrenches</div>
+            <div className="text-sm font-semibold text-sky-300">{Math.round(nation.allenWrenches)}</div>
+          </div>
+          <div>
+            <div className="text-[10px] text-slate-400">Pop / Cap</div>
+            <div className="text-sm font-semibold text-emerald-300">
+              {nation.population}/{nation.housingCap}{' '}
+              <span className="text-amber-300">
+                ({nation.armyCount || 0}/{nation.armyCap ?? (nation.armyCount || 0)})
+              </span>
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] text-slate-400">Tiles</div>
+            <div className="text-sm font-semibold text-slate-200">{nation.territoryTiles}</div>
+          </div>
+          <div>
+            <div className="text-[10px] text-slate-400">Founded</div>
+            <div className="text-sm font-semibold text-slate-300">Day {nation.foundedDay}</div>
           </div>
         </div>
-        <div>
-          <div className="text-[10px] text-slate-400">Tiles</div>
-          <div className="text-sm font-semibold text-slate-200">{nation.territoryTiles}</div>
-        </div>
-        <div>
-          <div className="text-[10px] text-slate-400">Founded</div>
-          <div className="text-sm font-semibold text-slate-300">Day {nation.foundedDay}</div>
-        </div>
+
+        {/* Population Reproduction & Capacity Status */}
+        {nation.alive && (
+          <div className="bg-slate-900/75 border border-slate-800 rounded-lg p-2 space-y-1.5">
+            <div className="flex items-center justify-between gap-2 text-[11px]">
+              <span className="flex items-center gap-1.5 text-slate-300 font-medium">
+                <Users className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Population Growth</span>
+              </span>
+              <span className="font-mono-tabular text-[11px]">
+                {(nation.reproductionRate ?? 0) > 0 ? (
+                  <span className="text-emerald-400 font-semibold">
+                    +{Math.round(nation.reproductionProgress ?? 0)}%
+                  </span>
+                ) : (
+                  <span className="text-amber-300">
+                    {nation.population < 2
+                      ? 'Needs 2+ citizens'
+                      : nation.population >= nation.housingCap
+                        ? 'At territory cap'
+                      : nation.meatballs < Math.max(5, nation.population * 0.5)
+                        ? 'Needs meatball supply'
+                        : 'Paused (morale < 12%)'}
+                  </span>
+                )}
+              </span>
+            </div>
+            <div className="h-1.5 w-full bg-slate-800 rounded overflow-hidden">
+              <div
+                className={`h-full transition-all ${
+                  (nation.reproductionRate ?? 0) > 0 ? 'bg-emerald-500' : 'bg-slate-600'
+                }`}
+                style={{
+                  width: `${Math.max(0, Math.min(100, Math.round(nation.reproductionProgress ?? 0)))}%`,
+                }}
+              />
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Citizen Workforce Jobs */}
@@ -306,8 +512,9 @@ export const NationPanel: React.FC<NationPanelProps> = ({
           </div>
           <button
             type="button"
+            disabled={!nation.alive}
             onClick={onOpenResearchTree}
-            className="px-2.5 py-1.5 rounded-lg bg-[#0058a3] hover:bg-sky-700 text-white text-[11px] font-semibold transition-colors whitespace-nowrap shrink-0"
+            className="px-2.5 py-1.5 rounded-lg bg-[#0058a3] hover:bg-sky-700 disabled:opacity-40 disabled:pointer-events-none text-white text-[11px] font-semibold transition-colors whitespace-nowrap shrink-0"
           >
             Research Tree
           </button>
@@ -390,7 +597,9 @@ export const NationPanel: React.FC<NationPanelProps> = ({
                         : rel.stance === 'EMBARGO'
                           ? 'text-orange-400'
                           : rel.stance === 'TRADE_PACT'
-                            ? 'text-sky-400'
+                          ? 'text-sky-400'
+                          : rel.stance === 'UNION'
+                            ? 'text-amber-300'
                             : rel.stance === 'ALLIANCE' || rel.stance === 'COALITION'
                               ? 'text-emerald-400'
                               : 'text-slate-400'
@@ -403,6 +612,84 @@ export const NationPanel: React.FC<NationPanelProps> = ({
             </div>
           )}
         </div>
+
+        {nation.alive && otherAliveNations.length > 0 && (
+          <div className="pt-2 border-t border-slate-800/70 space-y-1.5">
+            <div className="text-[11px] text-slate-400 font-medium">Direct Diplomacy Decree</div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <select
+                value={diploTargetId ?? otherAliveNations[0].id}
+                onChange={(e) => setDiploTargetId(Number(e.target.value))}
+                className="flex-1 min-w-[120px] bg-slate-900 border border-slate-700 rounded-md px-2 py-1 text-[11px] text-slate-100 focus:outline-none focus:border-sky-500"
+              >
+                {otherAliveNations.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => {
+                  const tid = diploTargetId ?? otherAliveNations[0].id;
+                  onSetDiplomacy(nation.id, tid, 'WAR');
+                }}
+                className="px-2 py-1 rounded bg-rose-950/70 hover:bg-rose-900/80 border border-rose-700/70 text-rose-200 text-[10px] font-semibold flex items-center gap-1"
+                title="Spark War"
+              >
+                <Swords className="w-3 h-3" />
+                <span>War</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const tid = diploTargetId ?? otherAliveNations[0].id;
+                  onSetDiplomacy(nation.id, tid, 'ALLIANCE');
+                }}
+                className="px-2 py-1 rounded bg-emerald-950/70 hover:bg-emerald-900/80 border border-emerald-700/70 text-emerald-200 text-[10px] font-semibold flex items-center gap-1"
+                title="Forge Alliance"
+              >
+                <Handshake className="w-3 h-3" />
+                <span>Ally</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const tid = diploTargetId ?? otherAliveNations[0].id;
+                  onSetDiplomacy(nation.id, tid, 'UNION');
+                }}
+                className="px-2 py-1 rounded bg-amber-950/70 hover:bg-amber-900/80 border border-amber-700/70 text-amber-200 text-[10px] font-semibold flex items-center gap-1"
+                title="Form Defense & Trade Union Pact"
+              >
+                <Shield className="w-3 h-3" />
+                <span>Union</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const tid = diploTargetId ?? otherAliveNations[0].id;
+                  onUniteNations(nation.id, tid);
+                }}
+                className="px-2 py-1 rounded bg-amber-600/80 hover:bg-amber-500 border border-amber-400/70 text-slate-950 text-[10px] font-bold flex items-center gap-1"
+                title="Unite Both Kingdoms Into One Realm"
+              >
+                <Crown className="w-3 h-3" />
+                <span>Unite</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const tid = diploTargetId ?? otherAliveNations[0].id;
+                  onSetDiplomacy(nation.id, tid, 'NEUTRAL');
+                }}
+                className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-200 text-[10px] font-semibold"
+                title="Make Peace"
+              >
+                Peace
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Leader Quote & Whisper as God */}
@@ -417,31 +704,37 @@ export const NationPanel: React.FC<NationPanelProps> = ({
           </p>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-1.5">
-          <label className="block text-[11px] font-medium text-slate-400">
-            Whisper as God{' '}
-            <span className="text-slate-500">
-              ({hasGeminiKey ? 'Gemini AI Active' : 'Heuristic AI · optional Gemini key'})
-            </span>
-          </label>
-          <div className="flex items-center gap-1.5">
-            <input
-              type="text"
-              value={whisperText}
-              onChange={(e) => setWhisperText(e.target.value)}
-              placeholder="e.g. Lower taxes or reform democracy..."
-              className="flex-1 min-w-0 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-500"
-            />
-            <button
-              type="submit"
-              disabled={sending || !whisperText.trim()}
-              className="min-h-[36px] px-3 py-2 rounded-lg bg-[#0058a3] hover:bg-sky-700 text-white font-semibold flex items-center gap-1 disabled:opacity-50 transition-colors shrink-0"
-            >
-              <Send className="w-3.5 h-3.5" />
-              <span>{sending ? '...' : 'Send'}</span>
-            </button>
-          </div>
-        </form>
+        {nation.alive ? (
+          <form onSubmit={handleSubmit} className="space-y-1.5">
+            <label className="block text-[11px] font-medium text-slate-400">
+              Whisper as God{' '}
+              <span className="text-slate-500">
+                ({hasGeminiKey ? 'Gemini AI Active' : 'Heuristic AI · optional Gemini key'})
+              </span>
+            </label>
+            <div className="flex items-center gap-1.5">
+              <input
+                type="text"
+                value={whisperText}
+                onChange={(e) => setWhisperText(e.target.value)}
+                placeholder="e.g. Lower taxes or reform democracy..."
+                className="flex-1 min-w-0 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-500"
+              />
+              <button
+                type="submit"
+                disabled={sending || !whisperText.trim()}
+                className="min-h-[36px] px-3 py-2 rounded-lg bg-[#0058a3] hover:bg-sky-700 text-white font-semibold flex items-center gap-1 disabled:opacity-50 transition-colors shrink-0"
+              >
+                <Send className="w-3.5 h-3.5" />
+                <span>{sending ? '...' : 'Send'}</span>
+              </button>
+            </div>
+          </form>
+        ) : (
+          <p className="text-[11px] text-slate-500">
+            Kingdom fallen — divine whispers cannot reach a defeated realm.
+          </p>
+        )}
       </div>
     </div>
   );
