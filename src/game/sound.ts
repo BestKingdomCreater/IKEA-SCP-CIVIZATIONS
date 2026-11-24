@@ -25,6 +25,7 @@ class SoundManager {
   private lastBuildAt = 0;
   private lastWarpAt = 0;
   private lastPackAt = 0;
+  private lastInvasionAlertAt = 0;
 
   // Cheerful IKEA Showroom Muzak melody (MIDI note numbers, 0 = rest)
   // F major pentatonic/lydian bouncy mallsoft loop (16 eighth-note steps)
@@ -278,7 +279,15 @@ class SoundManager {
   }
 
   public playShot(
-    weapon: 'nailgun' | 'halogen_rifle' | 'plasma_stapler' | 'pa_megaphone' | 'turret'
+    weapon:
+      | 'nailgun'
+      | 'halogen_rifle'
+      | 'plasma_stapler'
+      | 'pa_megaphone'
+      | 'turret'
+      | 'rail_cannon'
+      | 'arc_caster'
+      | 'staff_throw'
   ): void {
     if (!this.enabled) return;
     const nowMs = performance.now();
@@ -321,6 +330,40 @@ class SoundManager {
         gain.connect(this.fxGain);
         osc.start(t);
         osc.stop(t + 0.08);
+      } else if (weapon === 'rail_cannon') {
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(640, t);
+        osc.frequency.exponentialRampToValueAtTime(110, t + 0.09);
+        const lp = ctx.createBiquadFilter();
+        lp.type = 'lowpass';
+        lp.frequency.value = 1350;
+        gain.gain.setValueAtTime(0.018, t);
+        gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.09);
+        osc.connect(lp);
+        lp.connect(gain);
+        gain.connect(this.fxGain);
+        osc.start(t);
+        osc.stop(t + 0.095);
+      } else if (weapon === 'arc_caster') {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(1420, t);
+        osc.frequency.exponentialRampToValueAtTime(420, t + 0.085);
+        gain.gain.setValueAtTime(0.018, t);
+        gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.085);
+        osc.connect(gain);
+        gain.connect(this.fxGain);
+        osc.start(t);
+        osc.stop(t + 0.09);
+      } else if (weapon === 'staff_throw') {
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(240, t);
+        osc.frequency.exponentialRampToValueAtTime(95, t + 0.06);
+        gain.gain.setValueAtTime(0.014, t);
+        gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.06);
+        osc.connect(gain);
+        gain.connect(this.fxGain);
+        osc.start(t);
+        osc.stop(t + 0.065);
       } else if (weapon === 'pa_megaphone') {
         osc.type = 'sawtooth';
         osc.frequency.setValueAtTime(260, t);
@@ -426,6 +469,17 @@ class SoundManager {
     this.lastPackAt = nowMs;
     this.playChime(261, 0.14, 'triangle', 0.022);
     setTimeout(() => this.playChime(196, 0.2, 'triangle', 0.02), 110);
+  }
+
+  public playInvasionAlert(critical = false): void {
+    if (!this.enabled) return;
+    const nowMs = performance.now();
+    if (nowMs - this.lastInvasionAlertAt < 5000) return;
+    this.lastInvasionAlertAt = nowMs;
+    const f1 = critical ? 660 : 587;
+    const f2 = critical ? 880 : 740;
+    this.playChime(f1, 0.11, 'sine', 0.022);
+    setTimeout(() => this.playChime(f2, 0.15, 'sine', 0.02), 110);
   }
 }
 

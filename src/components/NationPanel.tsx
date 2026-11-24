@@ -4,6 +4,7 @@ import {
   BookOpen,
   Check,
   Crown,
+  Flag,
   Handshake,
   Pencil,
   Send,
@@ -14,9 +15,9 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import { TECH_TIER_NAMES, WEAPON_LABELS } from '../game/constants';
+import { NATION_PALETTE, TECH_TIER_NAMES, WEAPON_LABELS } from '../game/constants';
 import { RESEARCH_BY_ID, RESEARCH_TREE } from '../game/research';
-import { BuildingSpacing, DiplomaticStance, Nation } from '../game/types';
+import { BannerEmblem, BannerStyle, BuildingSpacing, DiplomaticStance, Nation } from '../game/types';
 
 interface NationPanelProps {
   nation: Nation;
@@ -27,6 +28,15 @@ interface NationPanelProps {
   onSelectNation: (nationId: number) => void;
   onOpenResearchTree: () => void;
   onRenameNation: (nationId: number, newName: string) => void;
+  onUpdateNationBanner: (
+    nationId: number,
+    patch: {
+      color?: string;
+      secondaryColor?: string;
+      bannerStyle?: BannerStyle;
+      bannerEmblem?: BannerEmblem;
+    }
+  ) => void;
   onChangeBuildingSpacing: (nationId: number, spacing: BuildingSpacing) => void;
   onSpawnUnitsForNation: (nationId: number, unitType: 'citizen' | 'guard') => void;
   onSetDiplomacy: (aId: number, bId: number, stance: DiplomaticStance) => void;
@@ -42,6 +52,7 @@ export const NationPanel: React.FC<NationPanelProps> = ({
   onSelectNation,
   onOpenResearchTree,
   onRenameNation,
+  onUpdateNationBanner,
   onChangeBuildingSpacing,
   onSpawnUnitsForNation,
   onSetDiplomacy,
@@ -51,6 +62,7 @@ export const NationPanel: React.FC<NationPanelProps> = ({
   const [whisperReply, setWhisperReply] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [editingName, setEditingName] = useState(false);
+  const [editingBanner, setEditingBanner] = useState(false);
   const [nameDraft, setNameDraft] = useState(nation.name);
   const [diploTargetId, setDiploTargetId] = useState<number | null>(null);
 
@@ -58,6 +70,7 @@ export const NationPanel: React.FC<NationPanelProps> = ({
 
   useEffect(() => {
     setEditingName(false);
+    setEditingBanner(false);
     setNameDraft(nation.name);
     const firstOther = allNations.find((n) => n.alive && n.id !== nation.id);
     setDiploTargetId(firstOther ? firstOther.id : null);
@@ -125,24 +138,64 @@ export const NationPanel: React.FC<NationPanelProps> = ({
           ) : (
             <div className="flex items-center gap-2">
               <span
-                className="w-3.5 h-3.5 rounded-sm shrink-0 border border-white/20"
-                style={{ backgroundColor: nation.alive ? nation.color : '#64748b' }}
-              />
+                className="w-5 h-4 rounded-sm shrink-0 border border-white/25 flex items-center justify-center text-[9px] leading-none font-bold text-white shadow-sm"
+                style={
+                  nation.alive && nation.secondaryColor && nation.bannerStyle && nation.bannerStyle !== 'solid'
+                    ? nation.bannerStyle === 'striped'
+                      ? {
+                          background: `repeating-linear-gradient(135deg, ${nation.color}, ${nation.color} 3px, ${nation.secondaryColor} 3px, ${nation.secondaryColor} 6px)`,
+                        }
+                      : nation.bannerStyle === 'crowned'
+                        ? {
+                            background: `linear-gradient(180deg, ${nation.secondaryColor} 0%, ${nation.secondaryColor} 38%, ${nation.color} 38%, ${nation.color} 100%)`,
+                          }
+                        : {
+                            background: `linear-gradient(90deg, ${nation.color} 0%, ${nation.color} 50%, ${nation.secondaryColor} 50%, ${nation.secondaryColor} 100%)`,
+                          }
+                    : { backgroundColor: nation.alive ? nation.color : '#64748b' }
+                }
+              >
+                {nation.bannerEmblem === 'crown'
+                  ? '♛'
+                  : nation.bannerEmblem === 'shield'
+                    ? '🛡'
+                    : nation.bannerEmblem === 'cart'
+                      ? '🛒'
+                      : nation.bannerEmblem === 'star'
+                        ? '★'
+                        : nation.bannerEmblem === 'bolt'
+                          ? '⚡'
+                          : ''}
+              </span>
               <h2 className="font-display text-lg font-bold text-white truncate">
                 {nation.name}
               </h2>
               {nation.alive && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setNameDraft(nation.name);
-                    setEditingName(true);
-                  }}
-                  className="p-1 rounded text-slate-400 hover:text-white hover:bg-slate-800 shrink-0"
-                  title="Rename Kingdom"
-                >
-                  <Pencil className="w-3 h-3" />
-                </button>
+                <div className="flex items-center gap-0.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNameDraft(nation.name);
+                      setEditingName(true);
+                    }}
+                    className="p-1 rounded text-slate-400 hover:text-white hover:bg-slate-800"
+                    title="Rename Kingdom"
+                  >
+                    <Pencil className="w-3 h-3" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditingBanner((prev) => !prev)}
+                    className={`p-1 rounded transition-colors ${
+                      editingBanner
+                        ? 'bg-[#0058a3] text-[#ffda1a]'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                    }`}
+                    title="Customize Flag & Banner"
+                  >
+                    <Flag className="w-3 h-3" />
+                  </button>
+                </div>
               )}
             </div>
           )}
@@ -178,6 +231,150 @@ export const NationPanel: React.FC<NationPanelProps> = ({
                 <Shield className="w-3 h-3" />
                 <span>+2 Guards</span>
               </button>
+              <button
+                type="button"
+                onClick={() => setEditingBanner((prev) => !prev)}
+                className={`px-2 py-1 rounded border text-[10px] font-semibold flex items-center gap-1 transition-colors ${
+                  editingBanner
+                    ? 'bg-[#0058a3] border-[#ffda1a]/80 text-[#ffda1a]'
+                    : 'bg-slate-900/80 hover:bg-slate-800 border-slate-700 text-slate-300'
+                }`}
+              >
+                <Flag className="w-3 h-3" />
+                <span>Flag</span>
+              </button>
+            </div>
+          )}
+
+          {nation.alive && editingBanner && (
+            <div className="mt-2.5 p-2.5 rounded-lg bg-slate-900/90 border border-slate-700/90 space-y-2">
+              <div className="flex items-center justify-between text-[10px] font-semibold text-slate-300">
+                <span>Flag &amp; Union Banner</span>
+                <button
+                  type="button"
+                  onClick={() => setEditingBanner(false)}
+                  className="text-slate-400 hover:text-white"
+                >
+                  Done
+                </button>
+              </div>
+              <div className="space-y-1">
+                <div className="text-[10px] text-slate-400">Primary Color</div>
+                <div className="flex flex-wrap gap-1">
+                  {NATION_PALETTE.slice(0, 10).map((p) => (
+                    <button
+                      key={`prim-${p.color}`}
+                      type="button"
+                      onClick={() => onUpdateNationBanner(nation.id, { color: p.color })}
+                      className={`w-4 h-4 rounded-sm border transition-transform ${
+                        nation.color === p.color
+                          ? 'border-white scale-110 ring-1 ring-[#ffda1a]'
+                          : 'border-white/20 hover:scale-105'
+                      }`}
+                      style={{ backgroundColor: p.color }}
+                      title={p.name}
+                    />
+                  ))}
+                </div>
+              </div>
+              <div className="space-y-1">
+                <div className="text-[10px] text-slate-400">Secondary Trim</div>
+                <div className="flex flex-wrap gap-1">
+                  {[
+                    '#ffda1a',
+                    '#ffffff',
+                    '#0f172a',
+                    ...NATION_PALETTE.slice(0, 7).map((p) => p.color),
+                  ].map((secColor) => (
+                    <button
+                      key={`sec-${secColor}`}
+                      type="button"
+                      onClick={() =>
+                        onUpdateNationBanner(nation.id, {
+                          secondaryColor: secColor,
+                          bannerStyle:
+                            !nation.bannerStyle || nation.bannerStyle === 'solid'
+                              ? 'split'
+                              : nation.bannerStyle,
+                        })
+                      }
+                      className={`w-4 h-4 rounded-sm border transition-transform ${
+                        (nation.secondaryColor || '#ffda1a') === secColor
+                          ? 'border-white scale-110 ring-1 ring-[#ffda1a]'
+                          : 'border-white/20 hover:scale-105'
+                      }`}
+                      style={{ backgroundColor: secColor }}
+                      title={secColor}
+                    />
+                  ))}
+                </div>
+              </div>
+              <div className="space-y-1">
+                <div className="text-[10px] text-slate-400">Pattern</div>
+                <div className="grid grid-cols-4 gap-1">
+                  {(
+                    [
+                      { id: 'solid', label: 'Solid' },
+                      { id: 'split', label: 'Split' },
+                      { id: 'striped', label: 'Stripes' },
+                      { id: 'crowned', label: 'Crown' },
+                    ] as Array<{ id: BannerStyle; label: string }>
+                  ).map((st) => {
+                    const active = (nation.bannerStyle || 'solid') === st.id;
+                    return (
+                      <button
+                        key={st.id}
+                        type="button"
+                        onClick={() =>
+                          onUpdateNationBanner(nation.id, {
+                            bannerStyle: st.id,
+                            secondaryColor: nation.secondaryColor || '#ffda1a',
+                          })
+                        }
+                        className={`px-1.5 py-0.5 rounded text-[10px] font-medium border ${
+                          active
+                            ? 'bg-[#0058a3] border-[#ffda1a]/80 text-white'
+                            : 'bg-slate-950 border-slate-700 text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        {st.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="space-y-1">
+                <div className="text-[10px] text-slate-400">Emblem</div>
+                <div className="grid grid-cols-6 gap-1">
+                  {(
+                    [
+                      { id: 'none', glyph: '—' },
+                      { id: 'crown', glyph: '♛' },
+                      { id: 'shield', glyph: '🛡' },
+                      { id: 'cart', glyph: '🛒' },
+                      { id: 'star', glyph: '★' },
+                      { id: 'bolt', glyph: '⚡' },
+                    ] as Array<{ id: BannerEmblem; glyph: string }>
+                  ).map((em) => {
+                    const active = (nation.bannerEmblem || 'none') === em.id;
+                    return (
+                      <button
+                        key={em.id}
+                        type="button"
+                        onClick={() => onUpdateNationBanner(nation.id, { bannerEmblem: em.id })}
+                        className={`py-0.5 rounded text-[11px] border ${
+                          active
+                            ? 'bg-[#0058a3] border-[#ffda1a]/80 text-[#ffda1a]'
+                            : 'bg-slate-950 border-slate-700 text-slate-300 hover:text-white'
+                        }`}
+                        title={em.id}
+                      >
+                        {em.glyph}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
           )}
         </div>

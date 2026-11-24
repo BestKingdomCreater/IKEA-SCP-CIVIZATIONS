@@ -12,7 +12,7 @@ import {
   X,
 } from 'lucide-react';
 import { SummitLoungeMessage } from '../game/diplomacy';
-import { ActiveAnomaly, Nation } from '../game/types';
+import { ActiveAnomaly, Nation, StaffInvasionAlert } from '../game/types';
 
 export type SummitDurationSec = 60 | 120 | 180 | 300;
 
@@ -26,6 +26,7 @@ interface SummitLoungeModalProps {
   leaderSeats: LeaderSeatInfo[];
   messages: SummitLoungeMessage[];
   activeAnomaly?: ActiveAnomaly | null;
+  staffInvasionAlert?: StaffInvasionAlert | null;
   sessionActive: boolean;
   sessionPaused: boolean;
   loadingTurn: boolean;
@@ -63,6 +64,7 @@ export const SummitLoungeModal: React.FC<SummitLoungeModalProps> = ({
   leaderSeats,
   messages,
   activeAnomaly,
+  staffInvasionAlert,
   sessionActive,
   sessionPaused,
   loadingTurn,
@@ -313,6 +315,23 @@ export const SummitLoungeModal: React.FC<SummitLoungeModalProps> = ({
               <span className="font-semibold truncate">Store Anomaly: {activeAnomaly.label}</span>
               <span className="font-mono-tabular text-[10px] text-cyan-300 shrink-0">
                 {Math.ceil(activeAnomaly.remainingSec)}s
+              </span>
+            </div>
+          )}
+
+          {staffInvasionAlert && (
+            <div
+              className={`rounded-lg border px-2.5 py-2 text-[11px] flex items-center justify-between gap-2 ${
+                staffInvasionAlert.severity === 'CRITICAL'
+                  ? 'border-rose-500/50 bg-rose-950/45 text-rose-200'
+                  : 'border-amber-500/50 bg-amber-950/45 text-amber-200'
+              }`}
+            >
+              <span className="font-semibold truncate">
+                PA Radar: {staffInvasionAlert.title} ({staffInvasionAlert.nationName})
+              </span>
+              <span className="font-mono-tabular text-[10px] shrink-0">
+                {staffInvasionAlert.enemyCount} Staff
               </span>
             </div>
           )}

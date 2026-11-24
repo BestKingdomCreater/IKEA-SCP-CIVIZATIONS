@@ -12,6 +12,7 @@ import { SaveLoadModal } from './components/SaveLoadModal';
 import { SettingsModal } from './components/SettingsModal';
 import { SummitDurationSec, SummitLoungeModal } from './components/SummitLoungeModal';
 import { TopHud } from './components/TopHud';
+import { UpdatesModal } from './components/UpdatesModal';
 import { WarTracker } from './components/WarTracker';
 import { WorldToolbar } from './components/WorldToolbar';
 import {
@@ -31,6 +32,7 @@ import {
   SummitLoungeMessage,
 } from './game/diplomacy';
 import { SimEngine } from './game/engine';
+import { hasTech } from './game/research';
 import { SerializedWorldV1 } from './game/saveLoad';
 import { soundFX } from './game/sound';
 import {
@@ -70,6 +72,7 @@ export default function App() {
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showSaveLoadModal, setShowSaveLoadModal] = useState(false);
   const [showRecordsModal, setShowRecordsModal] = useState(false);
+  const [showUpdatesModal, setShowUpdatesModal] = useState(false);
   const [showCustomKingdomModal, setShowCustomKingdomModal] = useState(false);
   const [pendingCustomKingdom, setPendingCustomKingdom] = useState<CustomKingdomConfig | null>(null);
   const [placementError, setPlacementError] = useState<string | null>(null);
@@ -157,8 +160,10 @@ export default function App() {
     summitActive: false,
     auditNight: false,
     activeAnomaly: null,
+    staffInvasionAlert: null,
     allowWildStaffKingdoms: false,
     infiniteWorldMode: false,
+    smartInfrastructureMode: true,
     originTx: 0,
     originTy: 0,
   }));
@@ -254,10 +259,12 @@ export default function App() {
 
       try {
         const nationMap = new Map(aliveNations.map((n) => [n.id, n]));
+        const snap = eng.getHudSnapshot(60);
         const payload = {
           day: eng.day,
           isNight: eng.isNight,
           activeAnomaly: eng.activeAnomaly,
+          staffInvasionAlert: snap.staffInvasionAlert,
           nations: aliveNations.map((n) => ({
             id: n.id,
             name: n.name,
@@ -271,6 +278,14 @@ export default function App() {
             wrenches: Math.round(n.allenWrenches),
             firearms: Math.round(n.firearms ?? 0),
             civilianGoods: Math.round(n.civilianGoods ?? 0),
+            bestWeapon: n.bestWeapon,
+            researchedTechCount: n.researchedTechs?.length ?? 0,
+            hasInvasionRadar: hasTech(n, 'staff_invasion_radar'),
+            hasUnionCorridor: Boolean(
+              n.isUnion ||
+                (n.unionCheckpoints && n.unionCheckpoints.length > 0) ||
+                Object.values(n.relations).some((r) => r.stance === 'UNION')
+            ),
             isUnion: Boolean(n.isUnion),
             unionMembers: n.unionMembers,
             happiness: Math.round(n.happiness),
@@ -928,6 +943,10 @@ export default function App() {
           tool === 'spawn_warden' ||
           tool === 'spawn_stalker' ||
           tool === 'spawn_announcer' ||
+          tool === 'spawn_forklift' ||
+          tool === 'spawn_thrower' ||
+          tool === 'spawn_disruptor' ||
+          tool === 'spawn_director' ||
           tool === 'spawn_caravan' ||
           tool === 'spawn_mercenary';
         if (isSingleTapPower) return;
@@ -1057,6 +1076,7 @@ export default function App() {
         onOpenSettings={() => setShowSettingsModal(true)}
         onOpenSaveLoad={() => setShowSaveLoadModal(true)}
         onOpenRecords={() => setShowRecordsModal(true)}
+        onOpenUpdates={() => setShowUpdatesModal(true)}
         onOpenCustomKingdom={() => {
           setPlacementError(null);
           setShowCustomKingdomModal(true);
@@ -1127,6 +1147,44 @@ export default function App() {
           </div>
         )}
 
+        {/* Unlocked Staff Invasion Alert Radar Banner */}
+        {!pendingCustomKingdom && hud.staffInvasionAlert && (
+          <button
+            type="button"
+            onClick={() => {
+              const al = hud.staffInvasionAlert;
+              if (!al) return;
+              setFollowUnitId(null);
+              panToTile(al.x, al.y);
+            }}
+            className={`pointer-events-auto absolute top-3 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2.5 px-3.5 py-2 rounded-xl border shadow-2xl text-xs transition-colors max-w-[92vw] ${
+              hud.staffInvasionAlert.severity === 'CRITICAL'
+                ? 'bg-rose-950/92 hover:bg-rose-900/95 border-rose-500 text-rose-100'
+                : 'bg-amber-950/92 hover:bg-amber-900/95 border-amber-500 text-amber-100'
+            }`}
+            title="Click to pan camera to the detected Staff invasion"
+          >
+            <span
+              className="w-2.5 h-2.5 rounded-full shrink-0 animate-pulse"
+              style={{
+                backgroundColor:
+                  hud.staffInvasionAlert.severity === 'CRITICAL' ? '#f43f5e' : '#fbbf24',
+              }}
+            />
+            <div className="text-left min-w-0">
+              <div className="font-bold tracking-wide flex items-center gap-1.5">
+                <span className="truncate">{hud.staffInvasionAlert.title}</span>
+                <span className="font-mono-tabular text-[10px] px-1.5 py-0.5 rounded bg-black/35 shrink-0">
+                  {hud.staffInvasionAlert.enemyCount} Staff
+                </span>
+              </div>
+              <div className="text-[11px] opacity-90 truncate">
+                {hud.staffInvasionAlert.detail} · Click to locate
+              </div>
+            </div>
+          </button>
+        )}
+
         {/* Top-Right Side News Ticker */}
         {!showSummitLounge && (
           <div className="pointer-events-none absolute top-3 right-3 z-20 flex flex-col items-end gap-2">
@@ -1180,6 +1238,12 @@ export default function App() {
             onRenameNation={(nid, newName) => {
               if (!engineRef.current) return;
               engineRef.current.renameNation(nid, newName);
+              setHud(engineRef.current.getHudSnapshot(hud.fps));
+            }}
+            onUpdateNationBanner={(nid, patch) => {
+              if (!engineRef.current) return;
+              soundFX.playChime(600, 0.05);
+              engineRef.current.updateNationBanner(nid, patch);
               setHud(engineRef.current.getHudSnapshot(hud.fps));
             }}
             onChangeBuildingSpacing={(nid, spacing) => {
@@ -1243,6 +1307,7 @@ export default function App() {
             leaderSeats={leaderSeats}
             messages={summitMessages}
             activeAnomaly={hud.activeAnomaly}
+            staffInvasionAlert={hud.staffInvasionAlert}
             sessionActive={summitSessionActive}
             sessionPaused={summitSessionPaused}
             loadingTurn={summitTurnLoading}
@@ -1378,6 +1443,7 @@ export default function App() {
           musicEnabled={musicEnabled}
           allowWildStaffKingdoms={Boolean(hud.allowWildStaffKingdoms)}
           infiniteWorldMode={Boolean(hud.infiniteWorldMode)}
+          smartInfrastructureMode={hud.smartInfrastructureMode !== false}
           isMobile={isPhone}
           onChangeMaxPop={setMaxPop}
           onChangeWorldPreset={(preset) => setWorldPreset(preset)}
@@ -1394,6 +1460,11 @@ export default function App() {
           onToggleInfiniteWorld={() => {
             if (!engineRef.current) return;
             engineRef.current.setInfiniteWorldMode(!engineRef.current.infiniteWorldMode);
+            setHud(engineRef.current.getHudSnapshot(hud.fps));
+          }}
+          onToggleSmartInfrastructure={() => {
+            if (!engineRef.current) return;
+            engineRef.current.setSmartInfrastructureMode(!engineRef.current.smartInfrastructureMode);
             setHud(engineRef.current.getHudSnapshot(hud.fps));
           }}
           onResetWorld={(preset) => {
@@ -1449,6 +1520,9 @@ export default function App() {
           onClose={() => setShowRecordsModal(false)}
         />
       )}
+
+      {/* Updates & Patch Notes Modal */}
+      {showUpdatesModal && <UpdatesModal onClose={() => setShowUpdatesModal(false)} />}
 
       {/* Custom Kingdom Creator Modal */}
       {showCustomKingdomModal && (

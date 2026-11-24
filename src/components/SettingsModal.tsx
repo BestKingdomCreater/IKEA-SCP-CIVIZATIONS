@@ -1,5 +1,5 @@
 import React from 'react';
-import { Crown, Infinity as InfinityIcon, Map, Music, Volume2, VolumeX, X } from 'lucide-react';
+import { Crown, Hammer, Infinity as InfinityIcon, Map, Music, Volume2, VolumeX, X } from 'lucide-react';
 import { WorldPreset } from '../game/types';
 
 interface SettingsModalProps {
@@ -9,6 +9,7 @@ interface SettingsModalProps {
   musicEnabled: boolean;
   allowWildStaffKingdoms: boolean;
   infiniteWorldMode: boolean;
+  smartInfrastructureMode: boolean;
   isMobile: boolean;
   onChangeMaxPop: (val: number) => void;
   onChangeWorldPreset: (preset: WorldPreset) => void;
@@ -16,6 +17,7 @@ interface SettingsModalProps {
   onToggleMusic: () => void;
   onToggleWildStaffKingdoms: () => void;
   onToggleInfiniteWorld: () => void;
+  onToggleSmartInfrastructure: () => void;
   onResetWorld: (preset?: WorldPreset) => void;
   onClose: () => void;
 }
@@ -34,6 +36,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   musicEnabled,
   allowWildStaffKingdoms,
   infiniteWorldMode,
+  smartInfrastructureMode,
   isMobile,
   onChangeMaxPop,
   onChangeWorldPreset,
@@ -41,6 +44,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onToggleMusic,
   onToggleWildStaffKingdoms,
   onToggleInfiniteWorld,
+  onToggleSmartInfrastructure,
   onResetWorld,
   onClose,
 }) => {
@@ -179,6 +183,27 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               >
                 <InfinityIcon className="w-3.5 h-3.5" />
                 <span>{infiniteWorldMode ? 'Infinite' : 'Fixed'}</span>
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between gap-2 pt-1">
+              <div>
+                <div className="font-medium text-slate-200">Smart Infrastructure Mode</div>
+                <div className="text-[11px] text-slate-400">
+                  4-gate capital citadels, outer border walls & need-driven districts
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={onToggleSmartInfrastructure}
+                className={`min-h-[38px] px-3 py-1.5 rounded-lg border font-semibold flex items-center gap-1.5 shrink-0 ${
+                  smartInfrastructureMode
+                    ? 'bg-emerald-950/70 border-emerald-500 text-emerald-200'
+                    : 'bg-slate-800 border-slate-700 text-slate-400'
+                }`}
+              >
+                <Hammer className="w-3.5 h-3.5" />
+                <span>{smartInfrastructureMode ? 'Smart' : 'Classic'}</span>
               </button>
             </div>
           </div>

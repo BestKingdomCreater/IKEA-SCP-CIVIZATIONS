@@ -7,9 +7,13 @@ export type UnitGiftAction =
   | 'bless'
   | 'rifle'
   | 'plasma'
+  | 'rail_cannon'
+  | 'arc_caster'
   | 'pacify'
   | 'promote_warden'
   | 'promote_manager'
+  | 'promote_forklift'
+  | 'promote_director'
   | 'charter_human'
   | 'charter_staff';
 
@@ -60,15 +64,23 @@ export const InspectUnitModal: React.FC<InspectUnitModalProps> = ({
                 ? 'SCP-3008-2 Blackout Stalker · Cuts Spotlights'
                 : unit.kind === UnitKind.STAFF_ANNOUNCER
                   ? 'SCP-3008-2 PA Hound · Closing Siren Buff'
-                  : unit.kind === UnitKind.STAFF_MANAGER
-                    ? 'SCP-3008-2 Manager Brute'
-                    : unit.kind === UnitKind.STAFF_CRAWLER
-                      ? 'SCP-3008-2 Fast Crawler'
-                      : isStaff
-                        ? nation
-                          ? 'SCP-3008-2 Citizen'
-                          : 'SCP-3008-2 Entity'
-                        : ROLE_NAMES[unit.role];
+                  : unit.kind === UnitKind.STAFF_FORKLIFT
+                    ? 'SCP-3008-2 Forklift Juggernaut · 3x Ram'
+                    : unit.kind === UnitKind.STAFF_THROWER
+                      ? 'SCP-3008-2 Shelf Quartermaster · Ranged'
+                      : unit.kind === UnitKind.STAFF_DISRUPTOR
+                        ? 'SCP-3008-2 Barcode Scanner · EMP Jammer'
+                        : unit.kind === UnitKind.STAFF_DIRECTOR
+                          ? 'SCP-3008-2 Store Director · Mega Boss'
+                          : unit.kind === UnitKind.STAFF_MANAGER
+                            ? 'SCP-3008-2 Manager Brute'
+                            : unit.kind === UnitKind.STAFF_CRAWLER
+                              ? 'SCP-3008-2 Fast Crawler'
+                              : isStaff
+                                ? nation
+                                  ? 'SCP-3008-2 Citizen'
+                                  : 'SCP-3008-2 Entity'
+                                : ROLE_NAMES[unit.role];
   const isInsideBuilding = (unit.insideTimer ?? 0) > 0;
   const weaponLabel = unit.weapon ? (WEAPON_LABELS[unit.weapon] ?? unit.weapon) : WEAPON_LABELS.none;
 
@@ -239,8 +251,23 @@ export const InspectUnitModal: React.FC<InspectUnitModalProps> = ({
                   </button>
                   <button
                     type="button"
+                    onClick={() => onUnitAction(unit.id, 'promote_forklift')}
+                    className="px-2 py-1 rounded-lg bg-yellow-950/60 hover:bg-yellow-900/70 border border-yellow-700/70 text-yellow-200 text-[10px] font-semibold"
+                  >
+                    Evolve Forklift
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onUnitAction(unit.id, 'promote_director')}
+                    className="col-span-2 px-2 py-1 rounded-lg bg-rose-950/75 hover:bg-rose-900/80 border border-rose-500/70 text-rose-100 text-[10px] font-semibold flex items-center justify-center gap-1"
+                  >
+                    <Crown className="w-3 h-3 text-[#ffda1a]" />
+                    <span>Evolve Store Director (Boss)</span>
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => onUnitAction(unit.id, 'rifle')}
-                    className="px-2 py-1 rounded-lg bg-cyan-950/60 hover:bg-cyan-900/70 border border-cyan-700/70 text-cyan-200 text-[10px] font-semibold"
+                    className="col-span-2 px-2 py-1 rounded-lg bg-cyan-950/60 hover:bg-cyan-900/70 border border-cyan-700/70 text-cyan-200 text-[10px] font-semibold"
                   >
                     Give Halogen Rifle
                   </button>
@@ -275,6 +302,22 @@ export const InspectUnitModal: React.FC<InspectUnitModalProps> = ({
                   >
                     <Zap className="w-3 h-3" />
                     <span>Plasma Stapler</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onUnitAction(unit.id, 'rail_cannon')}
+                    className="px-2 py-1 rounded-lg bg-orange-950/60 hover:bg-orange-900/70 border border-orange-700/70 text-orange-200 text-[10px] font-semibold flex items-center justify-center gap-1"
+                  >
+                    <Crosshair className="w-3 h-3" />
+                    <span>Rail Cannon</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onUnitAction(unit.id, 'arc_caster')}
+                    className="px-2 py-1 rounded-lg bg-fuchsia-950/60 hover:bg-fuchsia-900/70 border border-fuchsia-700/70 text-fuchsia-200 text-[10px] font-semibold flex items-center justify-center gap-1"
+                  >
+                    <Zap className="w-3 h-3" />
+                    <span>Arc Caster</span>
                   </button>
                 </>
               )}

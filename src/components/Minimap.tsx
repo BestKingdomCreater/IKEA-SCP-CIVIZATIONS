@@ -17,6 +17,11 @@ export const Minimap: React.FC<MinimapProps> = ({ engineRef, viewSize }) => {
     let raf = 0;
     let frameCounter = 0;
     const draw = () => {
+      frameCounter++;
+      if (frameCounter % 3 !== 1) {
+        raf = requestAnimationFrame(draw);
+        return;
+      }
       const c = canvasRef.current;
       const eng = engineRef.current;
       if (c && eng) {
@@ -126,8 +131,7 @@ export const Minimap: React.FC<MinimapProps> = ({ engineRef, viewSize }) => {
           ctx.lineWidth = 1.5;
           ctx.strokeRect(vx, vy, vw, vh);
 
-          frameCounter++;
-          if (frameCounter % 12 === 0) {
+          if (frameCounter % 12 === 1) {
             if (eng.infiniteWorldMode) {
               const secX = Math.round(eng.originTx / CHUNK_W);
               const secY = Math.round(eng.originTy / CHUNK_H);

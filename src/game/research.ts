@@ -4,7 +4,7 @@ export interface ResearchNode {
   id: TechId;
   name: string;
   branch: ResearchBranch;
-  tier: 1 | 2 | 3 | 4;
+  tier: 1 | 2 | 3 | 4 | 5 | 6;
   cost: number;
   requires?: TechId;
   unlocksTag?: string;
@@ -59,6 +59,26 @@ export const RESEARCH_TREE: ResearchNode[] = [
     unlocksTag: 'Crafts Civilian Goods (+Speed & Trade)',
     effectSummary: 'Workshops & Bistros craft Flatpack Furniture, Plush Blåhaj & Swede-Brew Espresso (+12% citizen speed, happiness & trade value).',
   },
+  {
+    id: 'cold_chain_bunkers',
+    name: 'Cold-Chain Meatball Vaults',
+    branch: 'economy',
+    tier: 5,
+    cost: 245,
+    requires: 'civilian_catalog',
+    unlocksTag: '+25% Bistro Food & Surplus Regen',
+    effectSummary: 'Refrigerated vats boost Meatball Bistro output +25%, while civilian goods stock heals nearby citizens steadily.',
+  },
+  {
+    id: 'megastore_supply_net',
+    name: 'Megastore Supply Network',
+    branch: 'economy',
+    tier: 6,
+    cost: 310,
+    requires: 'cold_chain_bunkers',
+    unlocksTag: '2x Trade Cadence & +50% Cargo',
+    effectSummary: 'Halves trade cart dispatch timers, boosts trade yields +50%, and grants bonus scrap & wrenches per delivery.',
+  },
 
   // Military & Siege
   {
@@ -99,6 +119,26 @@ export const RESEARCH_TREE: ResearchNode[] = [
     requires: 'siege_cart_rams',
     unlocksTag: 'Crafts Ranged Nailguns',
     effectSummary: 'Workshops craft rapid-fire Pneumatic Nailguns so Guards & Generals attack from range.',
+  },
+  {
+    id: 'kevlar_aprons',
+    name: 'Kevlar Apron Brigades',
+    branch: 'military',
+    tier: 5,
+    cost: 250,
+    requires: 'pneumatic_nailguns',
+    unlocksTag: 'Kevlar Vests (+35 HP, +4 ATK, +20% Army)',
+    effectSummary: 'Equips Guards, Generals, and Leaders with armored yellow-blue Kevlar vests (+35 Max HP, +4 ATK) and expands army cap +20%.',
+  },
+  {
+    id: 'heavy_rivet_cannons',
+    name: 'Heavy Rail-Nail Cannons',
+    branch: 'military',
+    tier: 6,
+    cost: 320,
+    requires: 'kevlar_aprons',
+    unlocksTag: 'Crafts Rail-Nail Cannons & +45% Turrets',
+    effectSummary: 'Workshops arm soldiers with high-velocity Rail-Nail Cannons and upgrade Watchtower turrets (+45% damage, +2 range).',
   },
 
   // Lighting & Survival
@@ -141,6 +181,26 @@ export const RESEARCH_TREE: ResearchNode[] = [
     unlocksTag: 'Builds Fast-Travel Escalators',
     effectSummary: 'Unlocks automated Escalator Hubs for instant fast-travel between distant territories and allies.',
   },
+  {
+    id: 'staff_invasion_radar',
+    name: 'PA Motion Sensors & Invasion Alert',
+    branch: 'lighting',
+    tier: 5,
+    cost: 230,
+    requires: 'maintenance_escalators',
+    unlocksTag: 'Unlocks Live Staff Invasion Alert',
+    effectSummary: 'Detects incoming Staff packs, Audit waves & border breaches—sounding an early HUD Invasion Alert with click-to-pan radar & rallying Guards early.',
+  },
+  {
+    id: 'sunlight_beacons',
+    name: 'Solar Atrium Floodlights',
+    branch: 'lighting',
+    tier: 6,
+    cost: 305,
+    requires: 'staff_invasion_radar',
+    unlocksTag: '+4 Light Radius & Burns Night Staff',
+    effectSummary: 'Expands all Spotlight, Watchtower & Flag safety zones by +4 tiles and sears feral Night Staff inside lit friendly tiles.',
+  },
 
   // SCP-IKEA R&D & Crafting
   {
@@ -181,6 +241,26 @@ export const RESEARCH_TREE: ResearchNode[] = [
     requires: 'fluorescent_capacitor',
     unlocksTag: 'Crafts Halogen Rifles & Plasma Staplers',
     effectSummary: 'Tech Labs & Workshops manufacture high-velocity Halogen Beam Rifles & Plasma Staplers for soldiers and leaders.',
+  },
+  {
+    id: 'repulsor_pylons',
+    name: 'Anomalous Repulsor Pylons',
+    branch: 'scp_tech',
+    tier: 5,
+    cost: 260,
+    requires: 'halogen_rifles',
+    unlocksTag: 'Jams Stalkers/Scanners & +30% Learn',
+    effectSummary: 'Tech Labs project anti-jamming fields protecting Spotlights & Watchtowers from Blackout/Scanner disruptions and boost RP +30%.',
+  },
+  {
+    id: 'quantum_barcodes',
+    name: 'Quantum Barcode Arsenal',
+    branch: 'scp_tech',
+    tier: 6,
+    cost: 330,
+    requires: 'repulsor_pylons',
+    unlocksTag: 'Crafts Chain-Arc Casters & +18 Firearms',
+    effectSummary: 'Tech Labs manufacture Arc-Barcode Casters that chain-shock clustered enemies, plus +18 firearms & +25 civilian goods.',
   },
 ];
 

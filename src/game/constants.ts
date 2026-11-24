@@ -163,5 +163,7 @@ export const WEAPON_LABELS: Record<string, string> = {
   halogen_rifle: 'Halogen Beam Rifle',
   plasma_stapler: 'Plasma Stapler',
   pa_megaphone: 'Sonic PA Blaster',
+  rail_cannon: 'Rail-Nail Cannon',
+  arc_caster: 'Arc-Barcode Caster',
 };
 

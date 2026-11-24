@@ -12,6 +12,7 @@ import {
   RotateCcw,
   Save,
   Settings,
+  Sparkles,
   Sun,
   Trophy,
   VolumeX,
@@ -31,6 +32,7 @@ interface TopHudProps {
   onOpenSettings: () => void;
   onOpenSaveLoad: () => void;
   onOpenRecords: () => void;
+  onOpenUpdates: () => void;
   onOpenCustomKingdom: () => void;
   onOpenTechCenter: () => void;
   onToggleSummitLounge: () => void;
@@ -52,6 +54,7 @@ export const TopHud: React.FC<TopHudProps> = ({
   onOpenSettings,
   onOpenSaveLoad,
   onOpenRecords,
+  onOpenUpdates,
   onOpenCustomKingdom,
   onOpenTechCenter,
   onToggleSummitLounge,
@@ -208,6 +211,16 @@ export const TopHud: React.FC<TopHudProps> = ({
         >
           <Trophy className="w-3.5 h-3.5 text-amber-300 shrink-0" />
           <span className="hidden xl:inline">Records</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={onOpenUpdates}
+          className="p-1.5 px-2 rounded-md bg-slate-800 hover:bg-amber-950/60 border border-slate-700 hover:border-amber-500/60 text-slate-200 font-medium flex items-center gap-1 transition-colors whitespace-nowrap shrink-0"
+          title="View Store Updates & Patch Notes"
+        >
+          <Sparkles className="w-3.5 h-3.5 text-[#ffda1a] shrink-0" />
+          <span className="hidden lg:inline">Updates</span>
         </button>
 
         <button

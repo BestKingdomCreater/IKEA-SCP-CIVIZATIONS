@@ -1,10 +1,14 @@
 import { GOVERNMENTS, IKEA_QUOTES } from './constants';
+import { WEAPON_LABELS } from './constants';
+import { hasTech } from './research';
 import {
   ActiveAnomaly,
   GeminiDiplomaticAction,
   GeminiSummitResponse,
   GovernmentType,
   Nation,
+  StaffInvasionAlert,
+  WeaponType,
 } from './types';
 
 export const GEMINI_KEY_STORAGE = 'scp3008_byok_gemini_key';
@@ -77,6 +81,7 @@ export interface SummitLoungeTurnRequest {
   day: number;
   isNight: boolean;
   activeAnomaly?: ActiveAnomaly | null;
+  staffInvasionAlert?: StaffInvasionAlert | null;
   nations: Array<{
     id: number;
     name: string;
@@ -90,6 +95,10 @@ export interface SummitLoungeTurnRequest {
     wrenches: number;
     firearms?: number;
     civilianGoods?: number;
+    bestWeapon?: WeaponType;
+    researchedTechCount?: number;
+    hasInvasionRadar?: boolean;
+    hasUnionCorridor?: boolean;
     happiness: number;
     tax: string;
     threat: number;
@@ -152,6 +161,8 @@ export function buildCompactSummitSnapshot(
         wrenches: Math.round(n.allenWrenches),
         firearms: Math.round(n.firearms || 0),
         civilianGoods: Math.round(n.civilianGoods || 0),
+        bestWeapon: n.bestWeapon || 'allen_spear',
+        hasInvasionRadar: hasTech(n, 'staff_invasion_radar'),
         isUnion: Boolean(n.isUnion),
         unionMembers: n.unionMembers || [],
         happiness: Math.round(n.happiness),
@@ -280,6 +291,9 @@ function runHeuristicSummitLoungeTurn(
     }
   }
 
+  const alertLine = payload.staffInvasionAlert
+    ? `PA Radar Alert! ${payload.staffInvasionAlert.title} (${payload.staffInvasionAlert.enemyCount} Staff near ${payload.staffInvasionAlert.nationName}) — our corridor guards and watchtowers are locking down!`
+    : null;
   const anomalyLine = payload.activeAnomaly
     ? `With ${payload.activeAnomaly.label} sweeping the store right now, ${other.leaderName}, we ought to coordinate escalators and defense.`
     : null;
@@ -287,19 +301,30 @@ function runHeuristicSummitLoungeTurn(
     speaker.species === 'staff'
       ? `As a sovereign SCP-3008-2 Staff realm, ${speaker.name} keeps the aisles tidy and our ${speaker.firearms || 0} PA weapons ready—respect our yellow-polo borders, ${other.leaderName}.`
       : null;
-  const unionLine = speaker.isUnion
-    ? `Our Grand Union (${(speaker.unionMembers || [speaker.name]).slice(0, 3).join(' + ')}) has linked trade corridors and ${speaker.civilianGoods || 0} catalog goods across the store.`
-    : null;
-  const techLine =
-    (speaker.firearms || 0) > 0 || (speaker.civilianGoods || 0) > 0
-      ? `Our Tech Labs forged ${speaker.firearms || 0} ranged weapons and ${speaker.civilianGoods || 0} catalog goods—our escalators keep the ${speaker.pop} citizens moving fast!`
+  const unionCorridorLine =
+    speaker.isUnion || speaker.hasUnionCorridor
+      ? `Our fortified Union corridor—lined with barricades, spotlights, and Escort Guards—keeps blue trade carts rolling safely even through Night Shift${speaker.unionMembers?.length ? ` for ${speaker.unionMembers.slice(0, 3).join(' & ')}` : ''}.`
       : null;
+  const highTechLabel = speaker.bestWeapon ? WEAPON_LABELS[speaker.bestWeapon] : 'Allen Wrench Spears';
+  const techLine =
+    (speaker.researchedTechCount || 0) >= 8 ||
+    speaker.bestWeapon === 'rail_cannon' ||
+    speaker.bestWeapon === 'arc_caster' ||
+    (speaker.firearms || 0) > 0 ||
+    (speaker.civilianGoods || 0) > 0
+      ? `Our Tech Labs unlocked ${speaker.researchedTechCount || 0} techs with ${highTechLabel} (${speaker.firearms || 0} firearms, ${speaker.civilianGoods || 0} catalog goods)—Forklift Juggernauts & Barcode Scanners won't breach us easily!`
+      : null;
+  const radarLine = speaker.hasInvasionRadar
+    ? `With PA Motion Sensors online, our watchtowers spot Staff siege packs and Shelf Quartermasters long before they hit the perimeter.`
+    : null;
 
   const lines = [
+    ...(alertLine ? [alertLine] : []),
     ...(anomalyLine ? [anomalyLine] : []),
     ...(staffLine ? [staffLine] : []),
-    ...(unionLine ? [unionLine] : []),
+    ...(unionCorridorLine ? [unionCorridorLine] : []),
     ...(techLine ? [techLine] : []),
+    ...(radarLine ? [radarLine] : []),
     `The showroom lights hum loudly today, ${other.leaderName}. With ${speaker.pop} citizens in ${speaker.name}, our top priority is keeping Night Staff away from our huts.`,
     `Pass the lingonberry cup, ${other.leaderName}. Between ${speaker.name}'s ${speaker.wrenches} wrenches and your carts, nobody in Sector 4 can match us.`,
     `Our ${speaker.gov} has ${speaker.happiness}% approval, though the ${speaker.tax} tax rate keeps our builders grumbling over Billy shelves.`,
@@ -308,7 +333,7 @@ function runHeuristicSummitLoungeTurn(
   return {
     speakerNationId: speaker.id,
     dialogue: lines[payload.history.length % lines.length],
-    mood: 'cordial',
+    mood: payload.staffInvasionAlert ? 'urgent' : 'cordial',
     usedGemini: false,
   };
 }

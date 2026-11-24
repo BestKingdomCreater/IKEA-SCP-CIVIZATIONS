@@ -24,6 +24,7 @@ export interface SerializedWorldV1 {
   summitDiscussed: boolean;
   allowWildStaffKingdoms?: boolean;
   infiniteWorldMode?: boolean;
+  smartInfrastructureMode?: boolean;
   originTx?: number;
   originTy?: number;
   worldSeed?: number;

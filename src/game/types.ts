@@ -34,7 +34,9 @@ export type WeaponType =
   | 'nailgun'
   | 'halogen_rifle'
   | 'plasma_stapler'
-  | 'pa_megaphone';
+  | 'pa_megaphone'
+  | 'rail_cannon'
+  | 'arc_caster';
 
 export type StoreAnomalyType =
   | 'FLUORESCENT_SURGE'
@@ -60,6 +62,10 @@ export const enum UnitKind {
   STAFF_WARDEN = 6,
   STAFF_STALKER = 7,
   STAFF_ANNOUNCER = 8,
+  STAFF_FORKLIFT = 9,
+  STAFF_THROWER = 10,
+  STAFF_DISRUPTOR = 11,
+  STAFF_DIRECTOR = 12,
 }
 
 export function isStaffKind(kind: UnitKind): boolean {
@@ -69,7 +75,11 @@ export function isStaffKind(kind: UnitKind): boolean {
     kind === UnitKind.STAFF_MANAGER ||
     kind === UnitKind.STAFF_WARDEN ||
     kind === UnitKind.STAFF_STALKER ||
-    kind === UnitKind.STAFF_ANNOUNCER
+    kind === UnitKind.STAFF_ANNOUNCER ||
+    kind === UnitKind.STAFF_FORKLIFT ||
+    kind === UnitKind.STAFF_THROWER ||
+    kind === UnitKind.STAFF_DISRUPTOR ||
+    kind === UnitKind.STAFF_DIRECTOR
   );
 }
 
@@ -120,18 +130,26 @@ export type TechId =
   | 'lingonberry_kitchens'
   | 'automated_cart_rails'
   | 'civilian_catalog'
+  | 'cold_chain_bunkers'
+  | 'megastore_supply_net'
   | 'allen_spears'
   | 'watchtower_turrets'
   | 'siege_cart_rams'
   | 'pneumatic_nailguns'
+  | 'kevlar_aprons'
+  | 'heavy_rivet_cannons'
   | 'halogen_floodlights'
   | 'fluorescent_ward'
   | 'blueprint_mastery'
   | 'maintenance_escalators'
+  | 'staff_invasion_radar'
+  | 'sunlight_beacons'
   | 'swedish_schematics'
   | 'flatpack_automation'
   | 'fluorescent_capacitor'
-  | 'halogen_rifles';
+  | 'halogen_rifles'
+  | 'repulsor_pylons'
+  | 'quantum_barcodes';
 
 export type UnitTrait = 'Brave' | 'Speedy' | 'Hoarder' | 'Tough' | 'Pyromaniac' | 'Blessed';
 
@@ -176,11 +194,17 @@ export interface LeaderInfo {
   kills: number;
 }
 
+export type BannerStyle = 'solid' | 'split' | 'striped' | 'crowned';
+export type BannerEmblem = 'none' | 'crown' | 'shield' | 'cart' | 'star' | 'bolt';
+
 export interface Nation {
   id: number;
   name: string;
   color: string;
   borderColor: string;
+  secondaryColor?: string;
+  bannerStyle?: BannerStyle;
+  bannerEmblem?: BannerEmblem;
   capitalX: number;
   capitalY: number;
   meatballs: number;
@@ -246,6 +270,7 @@ export interface Nation {
   isUnion?: boolean;
   unionMembers?: string[];
   unionHubs?: Array<{ x: number; y: number; name: string }>;
+  unionCheckpoints?: Array<{ x: number; y: number }>;
   reproductionProgress?: number;
   reproductionRate?: number;
   lastAttackerNationId?: number;
@@ -253,7 +278,7 @@ export interface Nation {
   species?: 'human' | 'staff';
   firearms?: number;
   civilianGoods?: number;
-  weaponTier?: 0 | 1 | 2 | 3;
+  weaponTier?: 0 | 1 | 2 | 3 | 4 | 5;
   bestWeapon?: WeaponType;
 }
 
@@ -310,6 +335,8 @@ export interface Unit {
   isCaravan?: boolean;
   isMercenary?: boolean;
   teleportCooldown?: number;
+  guardPostX?: number;
+  guardPostY?: number;
   alive: boolean;
 }
 
@@ -322,6 +349,7 @@ export interface Projectile {
   nationId: number;
   life: number;
   color?: string;
+  arcChain?: boolean;
 }
 
 export interface Particle {
@@ -376,6 +404,10 @@ export type ToolId =
   | 'spawn_stalker'
   | 'spawn_announcer'
   | 'spawn_manager'
+  | 'spawn_forklift'
+  | 'spawn_thrower'
+  | 'spawn_disruptor'
+  | 'spawn_director'
   | 'spawn_trader'
   | 'spawn_caravan'
   | 'spawn_mercenary'
@@ -466,6 +498,20 @@ export interface CustomKingdomConfig {
   startingPop: number;
 }
 
+export interface StaffInvasionAlert {
+  title: string;
+  detail: string;
+  targetNationId: number;
+  nationName: string;
+  nationColor: string;
+  x: number;
+  y: number;
+  enemyCount: number;
+  severity: 'WARNING' | 'CRITICAL';
+  phase: 'INCOMING' | 'BREACH';
+  remainingSec: number;
+}
+
 export interface HudSnapshot {
   day: number;
   isNight: boolean;
@@ -485,8 +531,10 @@ export interface HudSnapshot {
   summitActive: boolean;
   auditNight?: boolean;
   activeAnomaly?: ActiveAnomaly | null;
+  staffInvasionAlert?: StaffInvasionAlert | null;
   allowWildStaffKingdoms?: boolean;
   infiniteWorldMode?: boolean;
+  smartInfrastructureMode?: boolean;
   originTx?: number;
   originTy?: number;
 }
