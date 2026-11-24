@@ -26,6 +26,14 @@ import {
   WORLD_PX_W,
 } from './constants';
 import { runHeuristicDiplomacyTurn } from './diplomacy';
+import {
+  CHUNK_H,
+  CHUNK_W,
+  chunkKey,
+  createEmptyChunk,
+  generateProceduralChunk,
+  SavedWorldChunk,
+} from './infiniteWorld';
 import { canResearchTech, hasTech, RESEARCH_BY_ID, RESEARCH_TREE } from './research';
 import {
   base64ToInt16,
@@ -237,6 +245,23 @@ export class SimEngine {
   private viewTilesHalfW = 48;
   private viewTilesHalfH = 32;
 
+  public infiniteWorldMode = false;
+  public worldSeed = 1337;
+  public originTx = 0;
+  public originTy = 0;
+  private chunkStore = new Map<string, SavedWorldChunk>();
+  private discoveredChunks = new Set<string>();
+  private hibernatedNationTerr = new Map<number, number>();
+  private hibernatedNationPop = new Map<number, number>();
+
+  public get summitLocalX(): number {
+    return SUMMIT_X - this.originTx;
+  }
+
+  public get summitLocalY(): number {
+    return SUMMIT_Y - this.originTy;
+  }
+
   private onDayStartedCallback?: (day: number) => void;
 
   constructor(maxPop: number, isMobile: boolean, onDayStarted?: (day: number) => void) {
@@ -310,6 +335,20 @@ export class SimEngine {
     this.staffDominanceCheckTimer = 6;
     this.staffPackCooldown = 14;
     this.staffPack = null;
+    this.originTx = 0;
+    this.originTy = 0;
+    this.worldSeed = (Math.random() * 0x7fffffff) | 0;
+    this.chunkStore.clear();
+    this.discoveredChunks.clear();
+    this.hibernatedNationTerr.clear();
+    this.hibernatedNationPop.clear();
+    for (let cy = 0; cy < 6; cy++) {
+      for (let cx = 0; cx < 8; cx++) {
+        this.discoveredChunks.add(chunkKey(cx, cy));
+      }
+    }
+    this.camera.x = WORLD_PX_W * 0.5;
+    this.camera.y = WORLD_PX_H * 0.5;
     this.dirtyMap = true;
     this.dirtyLight = true;
     this.forceMapRebuild = true;
@@ -395,6 +434,10 @@ export class SimEngine {
       lastAutoSummitDay: this.lastAutoSummitDay,
       summitDiscussed: this.summitDiscussed,
       allowWildStaffKingdoms: this.allowWildStaffKingdoms,
+      infiniteWorldMode: this.infiniteWorldMode,
+      originTx: this.originTx,
+      originTy: this.originTy,
+      worldSeed: this.worldSeed,
       activeAnomaly: this.activeAnomaly ? { ...this.activeAnomaly } : null,
       camera: { ...this.camera },
       nations: this.nations.map((n) => ({
@@ -467,6 +510,21 @@ export class SimEngine {
     this.lastAutoSummitDay = data.lastAutoSummitDay || 0;
     this.summitDiscussed = Boolean(data.summitDiscussed);
     this.allowWildStaffKingdoms = Boolean(data.allowWildStaffKingdoms);
+    this.infiniteWorldMode = Boolean(data.infiniteWorldMode);
+    this.originTx = data.originTx ?? 0;
+    this.originTy = data.originTy ?? 0;
+    this.worldSeed = data.worldSeed ?? 1337;
+    this.chunkStore.clear();
+    this.discoveredChunks.clear();
+    this.hibernatedNationTerr.clear();
+    this.hibernatedNationPop.clear();
+    const baseBx = Math.floor(this.originTx / CHUNK_W);
+    const baseBy = Math.floor(this.originTy / CHUNK_H);
+    for (let cy = 0; cy < 6; cy++) {
+      for (let cx = 0; cx < 8; cx++) {
+        this.discoveredChunks.add(chunkKey(baseBx + cx, baseBy + cy));
+      }
+    }
     this.activeAnomaly = data.activeAnomaly ? { ...data.activeAnomaly } : null;
     this.summitLoungeSessionActive = false;
     this.summitSpeakingNationId = null;
@@ -522,7 +580,7 @@ export class SimEngine {
     for (let attempt = 0; attempt < 90; attempt++) {
       const tx = 14 + ((Math.random() * (GRID_W - 28)) | 0);
       const ty = 14 + ((Math.random() * (GRID_H - 28)) | 0);
-      if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 8) continue;
+      if (Math.hypot(tx - this.summitLocalX, ty - this.summitLocalY) <= SUMMIT_RADIUS + 8) continue;
       let minDist = 999;
       for (const n of this.nations) {
         if (!n.alive) continue;
@@ -544,7 +602,7 @@ export class SimEngine {
     let cx = Math.max(8, Math.min(GRID_W - 8, wx | 0));
     let cy = Math.max(8, Math.min(GRID_H - 8, wy | 0));
 
-    if (Math.hypot(cx - SUMMIT_X, cy - SUMMIT_Y) <= SUMMIT_RADIUS + 4) {
+    if (Math.hypot(cx - this.summitLocalX, cy - this.summitLocalY) <= SUMMIT_RADIUS + 4) {
       return { ok: false, error: 'Cannot establish a capital inside the neutral Summit Lounge zone.' };
     }
 
@@ -566,7 +624,7 @@ export class SimEngine {
         const tx = cx + dx;
         const ty = cy + dy;
         if (tx <= 1 || tx >= GRID_W - 1 || ty <= 1 || ty >= GRID_H - 1) continue;
-        if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 1) continue;
+        if (Math.hypot(tx - this.summitLocalX, ty - this.summitLocalY) <= SUMMIT_RADIUS + 1) continue;
         const idx = ty * GRID_W + tx;
         if (this.prop[idx] !== PropType.CHECKOUT_FLAG) {
           if (Math.abs(dx) <= 2 && Math.abs(dy) <= 2) {
@@ -967,7 +1025,7 @@ export class SimEngine {
     const by = b.capitalY + 0.5;
 
     const obstacles: Array<{ x: number; y: number; r: number }> = [
-      { x: SUMMIT_X + 0.5, y: SUMMIT_Y + 0.5, r: SUMMIT_RADIUS + 4.5 },
+      { x: this.summitLocalX + 0.5, y: this.summitLocalY + 0.5, r: SUMMIT_RADIUS + 4.5 },
     ];
 
     for (const c of this.nations) {
@@ -1041,7 +1099,7 @@ export class SimEngine {
       const row = y * GRID_W;
       for (let x = 1; x < GRID_W - 1; x++) {
         const idx = row + x;
-        if (Math.hypot(x - SUMMIT_X, y - SUMMIT_Y) <= SUMMIT_RADIUS + 1) continue;
+        if (Math.hypot(x - this.summitLocalX, y - this.summitLocalY) <= SUMMIT_RADIUS + 1) continue;
 
         const cur = snap[idx];
         const n0 = snap[idx - GRID_W];
@@ -1114,7 +1172,7 @@ export class SimEngine {
 
     const paintRoadTile = (tx: number, ty: number) => {
       if (tx < 2 || tx >= GRID_W - 2 || ty < 2 || ty >= GRID_H - 2) return;
-      if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 1.5) return;
+      if (Math.hypot(tx - this.summitLocalX, ty - this.summitLocalY) <= SUMMIT_RADIUS + 1.5) return;
       const idx = ty * GRID_W + tx;
       const curOwner = this.territory[idx];
       if (this.isTradeBlockedNation(a.id, b.id, curOwner)) return;
@@ -1222,7 +1280,7 @@ export class SimEngine {
             const tx = cx + dx;
             const ty = cy + dy;
             if (tx < 2 || tx >= GRID_W - 2 || ty < 2 || ty >= GRID_H - 2) continue;
-            if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 1.5) continue;
+            if (Math.hypot(tx - this.summitLocalX, ty - this.summitLocalY) <= SUMMIT_RADIUS + 1.5) continue;
 
             const idx = ty * GRID_W + tx;
             const curOwner = this.territory[idx];
@@ -1258,7 +1316,7 @@ export class SimEngine {
           const ly = Math.max(2, Math.min(GRID_H - 3, cy + 2));
           const lIdx = ly * GRID_W + lx;
           if (
-            Math.hypot(lx - SUMMIT_X, ly - SUMMIT_Y) > SUMMIT_RADIUS + 2 &&
+            Math.hypot(lx - this.summitLocalX, ly - this.summitLocalY) > SUMMIT_RADIUS + 2 &&
             this.territory[lIdx] === segmentOwnerId &&
             (this.prop[lIdx] === PropType.NONE || this.isDismantlableIkeaProp(this.prop[lIdx])) &&
             !this.hasOwnedBuildingNear(segmentOwnerId, lx, ly, 4, false)
@@ -1312,12 +1370,22 @@ export class SimEngine {
     }
 
     // Convert secondary's Checkout Flag into a lit Spotlight owned by the Union
-    const secCapIdx = secondary.capitalY * GRID_W + secondary.capitalX;
-    if (this.prop[secCapIdx] === PropType.CHECKOUT_FLAG) {
-      this.prop[secCapIdx] = PropType.SPOTLIGHT;
-      this.propHp[secCapIdx] = 180;
-      this.propMaxHp[secCapIdx] = 180;
-      this.propOwner[secCapIdx] = primary.id;
+    if (
+      secondary.capitalX >= 0 &&
+      secondary.capitalX < GRID_W &&
+      secondary.capitalY >= 0 &&
+      secondary.capitalY < GRID_H
+    ) {
+      const secCapIdx = secondary.capitalY * GRID_W + secondary.capitalX;
+      if (this.prop[secCapIdx] === PropType.CHECKOUT_FLAG) {
+        this.prop[secCapIdx] = PropType.SPOTLIGHT;
+        this.propHp[secCapIdx] = 180;
+        this.propMaxHp[secCapIdx] = 180;
+        this.propOwner[secCapIdx] = primary.id;
+      }
+    }
+    if (this.chunkStore.size > 0) {
+      this.transferNationInChunkStore(secondary.id, primary.id);
     }
 
     // Transfer all living units; promote former secondary leader into a Union Marshal
@@ -1980,7 +2048,7 @@ export class SimEngine {
       for (let attempt = 0; attempt < 25; attempt++) {
         const tx = 16 + ((Math.random() * (GRID_W - 32)) | 0);
         const ty = 16 + ((Math.random() * (GRID_H - 32)) | 0);
-        if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 8) continue;
+        if (Math.hypot(tx - this.summitLocalX, ty - this.summitLocalY) <= SUMMIT_RADIUS + 8) continue;
         if (this.territory[ty * GRID_W + tx] === -1) {
           cx = tx;
           cy = ty;
@@ -2019,7 +2087,7 @@ export class SimEngine {
       for (let attempt = 0; attempt < 30; attempt++) {
         const tx = 14 + ((Math.random() * (GRID_W - 28)) | 0);
         const ty = 14 + ((Math.random() * (GRID_H - 28)) | 0);
-        if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 8) continue;
+        if (Math.hypot(tx - this.summitLocalX, ty - this.summitLocalY) <= SUMMIT_RADIUS + 8) continue;
         const idx = ty * GRID_W + tx;
         if (this.territory[idx] === -1 && this.prop[idx] === PropType.NONE) {
           sx = tx;
@@ -2106,7 +2174,7 @@ export class SimEngine {
     for (let attempt = 0; attempt < 360 && restocked < 85; attempt++) {
       const tx = 4 + ((Math.random() * (GRID_W - 8)) | 0);
       const ty = 4 + ((Math.random() * (GRID_H - 8)) | 0);
-      if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 3) continue;
+      if (Math.hypot(tx - this.summitLocalX, ty - this.summitLocalY) <= SUMMIT_RADIUS + 3) continue;
       const idx = ty * GRID_W + tx;
       if (this.territory[idx] !== -1 || this.lightMap[idx] !== 0 || this.prop[idx] !== PropType.NONE) {
         continue;
@@ -2528,7 +2596,7 @@ export class SimEngine {
           'DIPLOMACY',
           `Night ${this.day} Emergency Radio Summit convened across the dark aisles!`
         );
-        this.spawnFloatingText(SUMMIT_X, SUMMIT_Y - 3, 'EMERGENCY SUMMIT!', '#38bdf8');
+        this.spawnFloatingText(this.summitLocalX, this.summitLocalY - 3, 'EMERGENCY SUMMIT!', '#38bdf8');
       }
       return;
     }
@@ -2546,13 +2614,13 @@ export class SimEngine {
         'DIPLOMACY',
         `Day ${this.day} Royal Summit: ${names} ${peacefulKings.length === 1 ? 'headed' : 'are meeting'} in the Neutral Showroom Lounge to talk!`
       );
-      this.spawnFloatingText(SUMMIT_X, SUMMIT_Y - 3, 'ROYAL SUMMIT!', '#ffda1a');
+      this.spawnFloatingText(this.summitLocalX, this.summitLocalY - 3, 'ROYAL SUMMIT!', '#ffda1a');
     } else if (manual) {
       this.addNews(
         'DIPLOMACY',
         `Day ${this.day} Summit: Envoys met by radio in the Neutral Lounge while kings remained at war.`
       );
-      this.spawnFloatingText(SUMMIT_X, SUMMIT_Y - 3, 'ROYAL SUMMIT!', '#ffda1a');
+      this.spawnFloatingText(this.summitLocalX, this.summitLocalY - 3, 'ROYAL SUMMIT!', '#ffda1a');
     }
   }
 
@@ -2566,7 +2634,7 @@ export class SimEngine {
       if (!n || !n.alive) continue;
       const atWar = Object.values(n.relations).some((r) => r.stance === 'WAR');
       if (atWar) continue;
-      if (Math.hypot(u.x - SUMMIT_X, u.y - SUMMIT_Y) <= 5.5) {
+      if (Math.hypot(u.x - this.summitLocalX, u.y - this.summitLocalY) <= 5.5) {
         attending.push({ nation: n, leader: u });
       }
     }
@@ -2574,8 +2642,8 @@ export class SimEngine {
     if (attending.length < 2) return;
     this.summitDiscussed = true;
 
-    this.spawnParticleBurst(SUMMIT_X, SUMMIT_Y, '#ffda1a', 14);
-    this.spawnFloatingText(SUMMIT_X, SUMMIT_Y - 3.6, 'SUMMIT ACCORD!', '#ffda1a');
+    this.spawnParticleBurst(this.summitLocalX, this.summitLocalY, '#ffda1a', 14);
+    this.spawnFloatingText(this.summitLocalX, this.summitLocalY - 3.6, 'SUMMIT ACCORD!', '#ffda1a');
 
     for (const { nation, leader } of attending) {
       nation.meatballs += 5;
@@ -2650,8 +2718,8 @@ export class SimEngine {
     this.summitLoungeSessionActive = active;
     if (active) {
       this.summitActiveTimer = Math.max(this.summitActiveTimer, 300);
-      this.spawnParticleBurst(SUMMIT_X + 0.5, SUMMIT_Y + 0.5, '#ffda1a', 14);
-      this.spawnFloatingText(SUMMIT_X + 0.5, SUMMIT_Y - 3, 'SUMMIT LOUNGE CONVENED', '#ffda1a');
+      this.spawnParticleBurst(this.summitLocalX + 0.5, this.summitLocalY + 0.5, '#ffda1a', 14);
+      this.spawnFloatingText(this.summitLocalX + 0.5, this.summitLocalY - 3, 'SUMMIT LOUNGE CONVENED', '#ffda1a');
       this.addNews(
         'DIPLOMACY',
         `Day ${this.day}: Leaders are heading to the Neutral Summit Lounge for live talks!`
@@ -2694,7 +2762,7 @@ export class SimEngine {
         u.role === SurvivorRole.LEADER
     );
     if (!leaderUnit) return 'away';
-    const dist = Math.hypot(leaderUnit.x - (SUMMIT_X + 0.5), leaderUnit.y - (SUMMIT_Y + 0.5));
+    const dist = Math.hypot(leaderUnit.x - (this.summitLocalX + 0.5), leaderUnit.y - (this.summitLocalY + 0.5));
     if (dist <= 4.2) return 'seated';
     if (this.summitLoungeSessionActive || (this.summitActiveTimer > 0 && !this.isNight)) {
       return 'walking';
@@ -2731,6 +2799,409 @@ export class SimEngine {
 
   public setAllowWildStaffKingdoms(enabled: boolean): void {
     this.allowWildStaffKingdoms = enabled;
+  }
+
+  public setInfiniteWorldMode(enabled: boolean): void {
+    this.infiniteWorldMode = enabled;
+    if (enabled) {
+      const baseBx = Math.floor(this.originTx / CHUNK_W);
+      const baseBy = Math.floor(this.originTy / CHUNK_H);
+      for (let cy = 0; cy < 6; cy++) {
+        for (let cx = 0; cx < 8; cx++) {
+          this.discoveredChunks.add(chunkKey(baseBx + cx, baseBy + cy));
+        }
+      }
+    } else {
+      this.clampCamera();
+    }
+  }
+
+  public isNationInWindow(n: Nation): boolean {
+    return n.capitalX >= 4 && n.capitalX < GRID_W - 4 && n.capitalY >= 4 && n.capitalY < GRID_H - 4;
+  }
+
+  public clampCamera(): void {
+    if (!this.infiniteWorldMode) {
+      this.camera.x = Math.max(0, Math.min(WORLD_PX_W, this.camera.x));
+      this.camera.y = Math.max(0, Math.min(WORLD_PX_H, this.camera.y));
+    }
+  }
+
+  public panToTile(localTx: number, localTy: number): void {
+    this.camera.x = localTx * TILE_SIZE;
+    this.camera.y = localTy * TILE_SIZE;
+    this.updateCameraAndStream();
+  }
+
+  public updateCameraAndStream(): void {
+    if (!this.infiniteWorldMode) {
+      this.clampCamera();
+      return;
+    }
+    const camTx = this.camera.x / TILE_SIZE;
+    const camTy = this.camera.y / TILE_SIZE;
+    const marginX = 48;
+    const marginY = 36;
+    let stepsX = 0;
+    let stepsY = 0;
+    if (camTx < marginX) {
+      stepsX = Math.floor((camTx - marginX) / CHUNK_W);
+    } else if (camTx > GRID_W - marginX) {
+      stepsX = Math.ceil((camTx - (GRID_W - marginX)) / CHUNK_W);
+    }
+    if (camTy < marginY) {
+      stepsY = Math.floor((camTy - marginY) / CHUNK_H);
+    } else if (camTy > GRID_H - marginY) {
+      stepsY = Math.ceil((camTy - (GRID_H - marginY)) / CHUNK_H);
+    }
+    if (stepsX !== 0 || stepsY !== 0) {
+      this.shiftOriginTo(this.originTx + stepsX * CHUNK_W, this.originTy + stepsY * CHUNK_H);
+    }
+  }
+
+  private recomputeHibernatedStats(): void {
+    this.hibernatedNationTerr.clear();
+    this.hibernatedNationPop.clear();
+    if (this.chunkStore.size === 0) return;
+    for (const ch of this.chunkStore.values()) {
+      if (ch.nationTerrCounts) {
+        for (const [nidStr, count] of Object.entries(ch.nationTerrCounts)) {
+          const nid = Number(nidStr);
+          this.hibernatedNationTerr.set(nid, (this.hibernatedNationTerr.get(nid) ?? 0) + count);
+        }
+      }
+      for (const du of ch.dormantUnits) {
+        if (du.alive && du.nationId >= 0 && this.isNationCitizen(du)) {
+          this.hibernatedNationPop.set(
+            du.nationId,
+            (this.hibernatedNationPop.get(du.nationId) ?? 0) + 1
+          );
+        }
+      }
+    }
+  }
+
+  private transferNationInChunkStore(fromNationId: number, toNationId: number): void {
+    for (const ch of this.chunkStore.values()) {
+      const hasTerr = (ch.nationTerrCounts?.[fromNationId] ?? 0) > 0;
+      if (hasTerr) {
+        for (let i = 0; i < ch.territory.length; i++) {
+          if (ch.territory[i] === fromNationId) {
+            ch.territory[i] = toNationId;
+          }
+          if (ch.propOwner[i] === fromNationId) {
+            ch.propOwner[i] = toNationId;
+          }
+        }
+        const movedCount = ch.nationTerrCounts![fromNationId] ?? 0;
+        delete ch.nationTerrCounts![fromNationId];
+        if (toNationId >= 0) {
+          ch.nationTerrCounts![toNationId] = (ch.nationTerrCounts![toNationId] ?? 0) + movedCount;
+        }
+      }
+      for (const du of ch.dormantUnits) {
+        if (du.alive && du.nationId === fromNationId) {
+          du.nationId = toNationId;
+          du.originNationId = toNationId;
+          if (du.role === SurvivorRole.LEADER || du.role === SurvivorRole.GENERAL) {
+            du.role = SurvivorRole.GUARD;
+          }
+        }
+      }
+    }
+    this.recomputeHibernatedStats();
+  }
+
+  private saveActiveBlockToChunk(cx: number, cy: number, bx: number, by: number): SavedWorldChunk {
+    const ch = createEmptyChunk(bx, by);
+    const terrCounts: Record<number, number> = {};
+    const gx0 = cx * CHUNK_W;
+    const gy0 = cy * CHUNK_H;
+    for (let ly = 0; ly < CHUNK_H; ly++) {
+      const srcStart = (gy0 + ly) * GRID_W + gx0;
+      const srcEnd = srcStart + CHUNK_W;
+      const dstStart = ly * CHUNK_W;
+      ch.biome.set(this.biome.subarray(srcStart, srcEnd), dstStart);
+      ch.prop.set(this.prop.subarray(srcStart, srcEnd), dstStart);
+      ch.propHp.set(this.propHp.subarray(srcStart, srcEnd), dstStart);
+      ch.propMaxHp.set(this.propMaxHp.subarray(srcStart, srcEnd), dstStart);
+      ch.propOwner.set(this.propOwner.subarray(srcStart, srcEnd), dstStart);
+      ch.propVariant.set(this.propVariant.subarray(srcStart, srcEnd), dstStart);
+      ch.territory.set(this.territory.subarray(srcStart, srcEnd), dstStart);
+      ch.lightMap.set(this.lightMap.subarray(srcStart, srcEnd), dstStart);
+      ch.fireMap.set(this.fireMap.subarray(srcStart, srcEnd), dstStart);
+      ch.disabledLightMap.set(this.disabledLightMap.subarray(srcStart, srcEnd), dstStart);
+      for (let lx = 0; lx < CHUNK_W; lx++) {
+        const tid = this.territory[srcStart + lx];
+        if (tid >= 0) {
+          terrCounts[tid] = (terrCounts[tid] ?? 0) + 1;
+        }
+      }
+    }
+    ch.nationTerrCounts = terrCounts;
+    return ch;
+  }
+
+  private writeChunkToActiveGrid(cx: number, cy: number, ch: SavedWorldChunk): void {
+    const gx0 = cx * CHUNK_W;
+    const gy0 = cy * CHUNK_H;
+    for (let ly = 0; ly < CHUNK_H; ly++) {
+      const srcStart = ly * CHUNK_W;
+      const srcEnd = srcStart + CHUNK_W;
+      const dstStart = (gy0 + ly) * GRID_W + gx0;
+      this.biome.set(ch.biome.subarray(srcStart, srcEnd), dstStart);
+      this.prop.set(ch.prop.subarray(srcStart, srcEnd), dstStart);
+      this.propHp.set(ch.propHp.subarray(srcStart, srcEnd), dstStart);
+      this.propMaxHp.set(ch.propMaxHp.subarray(srcStart, srcEnd), dstStart);
+      this.propOwner.set(ch.propOwner.subarray(srcStart, srcEnd), dstStart);
+      this.propVariant.set(ch.propVariant.subarray(srcStart, srcEnd), dstStart);
+      this.territory.set(ch.territory.subarray(srcStart, srcEnd), dstStart);
+      this.lightMap.set(ch.lightMap.subarray(srcStart, srcEnd), dstStart);
+      this.fireMap.set(ch.fireMap.subarray(srcStart, srcEnd), dstStart);
+      this.disabledLightMap.set(ch.disabledLightMap.subarray(srcStart, srcEnd), dstStart);
+    }
+  }
+
+  private shiftOriginTo(newOriginTx: number, newOriginTy: number): void {
+    const shiftX = newOriginTx - this.originTx;
+    const shiftY = newOriginTy - this.originTy;
+    if (shiftX === 0 && shiftY === 0) return;
+
+    const oldBx0 = Math.floor(this.originTx / CHUNK_W);
+    const oldBy0 = Math.floor(this.originTy / CHUNK_H);
+    const newBx0 = Math.floor(newOriginTx / CHUNK_W);
+    const newBy0 = Math.floor(newOriginTy / CHUNK_H);
+
+    // 1. Save outgoing 30x30 blocks to chunkStore
+    for (let cy = 0; cy < 6; cy++) {
+      for (let cx = 0; cx < 8; cx++) {
+        const bx = oldBx0 + cx;
+        const by = oldBy0 + cy;
+        const staysInNew =
+          bx >= newBx0 && bx < newBx0 + 8 && by >= newBy0 && by < newBy0 + 6;
+        if (!staysInNew) {
+          const ch = this.saveActiveBlockToChunk(cx, cy, bx, by);
+          this.chunkStore.set(chunkKey(bx, by), ch);
+        }
+      }
+    }
+
+    // 2. Shift living units & hibernate those leaving the active 240x180 window
+    const activeUnits: Unit[] = [];
+    for (let i = 0; i < this.units.length; i++) {
+      const u = this.units[i];
+      if (!u.alive) continue;
+      u.x -= shiftX;
+      u.y -= shiftY;
+      u.targetX -= shiftX;
+      u.targetY -= shiftY;
+      u.lastCheckX -= shiftX;
+      u.lastCheckY -= shiftY;
+      if (u.routeWaypoints) {
+        for (const wp of u.routeWaypoints) {
+          wp.x -= shiftX;
+          wp.y -= shiftY;
+        }
+      }
+      if (u.insideBuildingIdx !== undefined && u.insideBuildingIdx >= 0) {
+        const obx = u.insideBuildingIdx % GRID_W;
+        const oby = (u.insideBuildingIdx / GRID_W) | 0;
+        const nbx = obx - shiftX;
+        const nby = oby - shiftY;
+        if (nbx >= 0 && nbx < GRID_W && nby >= 0 && nby < GRID_H) {
+          u.insideBuildingIdx = nby * GRID_W + nbx;
+        } else {
+          u.insideBuildingIdx = undefined;
+          u.insideTimer = 0;
+        }
+      }
+      u.visitTargetIdx = undefined;
+
+      if (u.x >= 0 && u.x < GRID_W && u.y >= 0 && u.y < GRID_H) {
+        activeUnits.push(u);
+      } else {
+        const wx = newOriginTx + u.x;
+        const wy = newOriginTy + u.y;
+        const ubx = Math.floor(Math.floor(wx) / CHUNK_W);
+        const uby = Math.floor(Math.floor(wy) / CHUNK_H);
+        const key = chunkKey(ubx, uby);
+        const targetChunk = this.chunkStore.get(key);
+        if (targetChunk) {
+          u.x = wx;
+          u.y = wy;
+          u.targetX += newOriginTx;
+          u.targetY += newOriginTy;
+          u.lastCheckX += newOriginTx;
+          u.lastCheckY += newOriginTy;
+          if (u.routeWaypoints) {
+            for (const wp of u.routeWaypoints) {
+              wp.x += newOriginTx;
+              wp.y += newOriginTy;
+            }
+          }
+          u.insideTimer = 0;
+          u.insideBuildingIdx = undefined;
+          targetChunk.dormantUnits.push(u);
+        }
+      }
+    }
+    this.units = activeUnits;
+
+    // 3. Shift overlapping typed-array rows in-place
+    const dstX0 = Math.max(0, -shiftX);
+    const dstX1 = Math.min(GRID_W, GRID_W - shiftX);
+    const dstY0 = Math.max(0, -shiftY);
+    const dstY1 = Math.min(GRID_H, GRID_H - shiftY);
+    if (dstX1 > dstX0 && dstY1 > dstY0) {
+      const shiftArrRow = (arr: Uint8Array | Uint16Array | Int16Array, dstY: number) => {
+        const srcY = dstY + shiftY;
+        const dstStart = dstY * GRID_W + dstX0;
+        const srcStart = srcY * GRID_W + dstX0 + shiftX;
+        const len = dstX1 - dstX0;
+        arr.copyWithin(dstStart, srcStart, srcStart + len);
+      };
+      const stepRow = (dstY: number) => {
+        shiftArrRow(this.biome, dstY);
+        shiftArrRow(this.prop, dstY);
+        shiftArrRow(this.propHp, dstY);
+        shiftArrRow(this.propMaxHp, dstY);
+        shiftArrRow(this.propOwner, dstY);
+        shiftArrRow(this.propVariant, dstY);
+        shiftArrRow(this.territory, dstY);
+        shiftArrRow(this.lightMap, dstY);
+        shiftArrRow(this.fireMap, dstY);
+        shiftArrRow(this.disabledLightMap, dstY);
+      };
+      if (shiftY < 0) {
+        for (let dstY = dstY1 - 1; dstY >= dstY0; dstY--) stepRow(dstY);
+      } else {
+        for (let dstY = dstY0; dstY < dstY1; dstY++) stepRow(dstY);
+      }
+    }
+
+    // 4. Update origin & load/generate newly entered 30x30 sectors
+    this.originTx = newOriginTx;
+    this.originTy = newOriginTy;
+
+    for (let cy = 0; cy < 6; cy++) {
+      for (let cx = 0; cx < 8; cx++) {
+        const bx = newBx0 + cx;
+        const by = newBy0 + cy;
+        const wasInOld = bx >= oldBx0 && bx < oldBx0 + 8 && by >= oldBy0 && by < oldBy0 + 6;
+        if (wasInOld) continue;
+
+        const key = chunkKey(bx, by);
+        const saved = this.chunkStore.get(key);
+        if (saved) {
+          this.writeChunkToActiveGrid(cx, cy, saved);
+          this.chunkStore.delete(key);
+          for (const du of saved.dormantUnits) {
+            if (!du.alive) continue;
+            const isCitizen = du.nationId >= 0 && this.isNationCitizen(du);
+            if (!isCitizen && this.units.length >= this.maxPopulation + 160) continue;
+            du.x -= newOriginTx;
+            du.y -= newOriginTy;
+            du.targetX -= newOriginTx;
+            du.targetY -= newOriginTy;
+            du.lastCheckX -= newOriginTx;
+            du.lastCheckY -= newOriginTy;
+            if (du.routeWaypoints) {
+              for (const wp of du.routeWaypoints) {
+                wp.x -= newOriginTx;
+                wp.y -= newOriginTy;
+              }
+            }
+            if (du.x >= 0 && du.x < GRID_W && du.y >= 0 && du.y < GRID_H) {
+              this.units.push(du);
+            }
+          }
+        } else {
+          const { chunk, spawns } = generateProceduralChunk(
+            this.worldSeed,
+            bx,
+            by,
+            this.worldPreset
+          );
+          this.writeChunkToActiveGrid(cx, cy, chunk);
+          if (!this.discoveredChunks.has(key)) {
+            this.discoveredChunks.add(key);
+            if (this.units.length < this.maxPopulation + 120) {
+              for (const sp of spawns) {
+                const lx = cx * CHUNK_W + sp.lx;
+                const ly = cy * CHUNK_H + sp.ly;
+                if (
+                  sp.kind === UnitKind.STAFF_NORMAL ||
+                  sp.kind === UnitKind.STAFF_CRAWLER ||
+                  sp.kind === UnitKind.STAFF_MANAGER ||
+                  sp.kind === UnitKind.STAFF_WARDEN ||
+                  sp.kind === UnitKind.STAFF_STALKER ||
+                  sp.kind === UnitKind.STAFF_ANNOUNCER
+                ) {
+                  const spawned = this.spawnStaff(sp.kind, lx, ly);
+                  if (sp.name) spawned.name = sp.name;
+                } else {
+                  this.spawnSurvivor(-1, sp.role, lx, ly);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // 5. Shift camera, nations, effects, and caches
+    this.camera.x -= shiftX * TILE_SIZE;
+    this.camera.y -= shiftY * TILE_SIZE;
+
+    for (const n of this.nations) {
+      n.capitalX -= shiftX;
+      n.capitalY -= shiftY;
+      if (n.unionHubs) {
+        for (const h of n.unionHubs) {
+          h.x -= shiftX;
+          h.y -= shiftY;
+        }
+      }
+      if (n.battlePlan) {
+        n.battlePlan.rallyX -= shiftX;
+        n.battlePlan.rallyY -= shiftY;
+      }
+    }
+
+    this.projectiles = this.projectiles.filter((p) => {
+      p.x -= shiftX;
+      p.y -= shiftY;
+      return p.x >= 0 && p.x < GRID_W && p.y >= 0 && p.y < GRID_H;
+    });
+    this.particles = this.particles.filter((pt) => {
+      pt.x -= shiftX;
+      pt.y -= shiftY;
+      return pt.x >= 0 && pt.x < GRID_W && pt.y >= 0 && pt.y < GRID_H;
+    });
+    this.floatingTexts = this.floatingTexts.filter((ft) => {
+      ft.x -= shiftX;
+      ft.y -= shiftY;
+      return ft.x >= 0 && ft.x < GRID_W && ft.y >= 0 && ft.y < GRID_H;
+    });
+    this.recentBuilds = this.recentBuilds.filter((rb) => {
+      rb.x -= shiftX;
+      rb.y -= shiftY;
+      return rb.x >= 0 && rb.x < GRID_W && rb.y >= 0 && rb.y < GRID_H;
+    });
+    if (this.staffPack) {
+      this.staffPack.targetX -= shiftX;
+      this.staffPack.targetY -= shiftY;
+      this.staffPack.rallyX -= shiftX;
+      this.staffPack.rallyY -= shiftY;
+    }
+
+    this.activeBuilderTargets.clear();
+    this.warFrontCache.clear();
+    this.recomputeHibernatedStats();
+    this.spatialHash.rebuild(this.units);
+    this.recountTerritoryAndHousing();
+    this.recomputeLightMap();
+    this.rebuildMapCache();
   }
 
   private getEffectiveGuardRatio(n: Nation): number {
@@ -3448,7 +3919,7 @@ export class SimEngine {
           const tx = hub.x + Math.round(off.dx * hubScale);
           const ty = hub.y + Math.round(off.dy * hubScale);
           if (tx < 2 || tx >= GRID_W - 2 || ty < 2 || ty >= GRID_H - 2) continue;
-          if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 2) continue;
+          if (Math.hypot(tx - this.summitLocalX, ty - this.summitLocalY) <= SUMMIT_RADIUS + 2) continue;
           const idx = ty * GRID_W + tx;
           if (this.territory[idx] !== n.id || this.activeBuilderTargets.has(idx)) continue;
           if (this.biome[idx] === BiomeType.WALKWAY) continue;
@@ -3484,7 +3955,7 @@ export class SimEngine {
       for (let attempt = 0; attempt < 110; attempt++) {
         const tx = minX + ((Math.random() * (maxX - minX + 1)) | 0);
         const ty = minY + ((Math.random() * (maxY - minY + 1)) | 0);
-        if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 2) continue;
+        if (Math.hypot(tx - this.summitLocalX, ty - this.summitLocalY) <= SUMMIT_RADIUS + 2) continue;
         const idx = ty * GRID_W + tx;
         if (this.territory[idx] !== n.id || this.activeBuilderTargets.has(idx)) continue;
 
@@ -3584,7 +4055,7 @@ export class SimEngine {
           const tx = Math.round(anchor.x + Math.cos(ang) * anchor.rad);
           const ty = Math.round(anchor.y + Math.sin(ang) * anchor.rad);
           if (tx < 2 || tx >= GRID_W - 2 || ty < 2 || ty >= GRID_H - 2) continue;
-          if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 2) continue;
+          if (Math.hypot(tx - this.summitLocalX, ty - this.summitLocalY) <= SUMMIT_RADIUS + 2) continue;
           const idx = ty * GRID_W + tx;
           if (this.territory[idx] !== n.id || this.activeBuilderTargets.has(idx)) continue;
           const existing = this.prop[idx];
@@ -3608,7 +4079,7 @@ export class SimEngine {
     for (let attempt = 0; attempt < 85; attempt++) {
       const tx = minX + ((Math.random() * (maxX - minX + 1)) | 0);
       const ty = minY + ((Math.random() * (maxY - minY + 1)) | 0);
-      if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 2) continue;
+      if (Math.hypot(tx - this.summitLocalX, ty - this.summitLocalY) <= SUMMIT_RADIUS + 2) continue;
       const idx = ty * GRID_W + tx;
       if (this.territory[idx] !== n.id || this.activeBuilderTargets.has(idx)) continue;
 
@@ -3739,7 +4210,7 @@ export class SimEngine {
       const tx = n.capitalX + slot.dx;
       const ty = n.capitalY + slot.dy;
       if (tx < 2 || tx >= GRID_W - 2 || ty < 2 || ty >= GRID_H - 2) continue;
-      if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 2) continue;
+      if (Math.hypot(tx - this.summitLocalX, ty - this.summitLocalY) <= SUMMIT_RADIUS + 2) continue;
 
       const idx = ty * GRID_W + tx;
       const existingProp = this.prop[idx];
@@ -3950,12 +4421,22 @@ export class SimEngine {
         this.propOwner[i] = victor.id;
       }
     }
-    const capIdx = defeated.capitalY * GRID_W + defeated.capitalX;
-    if (this.prop[capIdx] === PropType.CHECKOUT_FLAG) {
-      this.prop[capIdx] = PropType.SPOTLIGHT;
-      this.propHp[capIdx] = 150;
-      this.propMaxHp[capIdx] = 150;
-      this.propOwner[capIdx] = victor.id;
+    if (
+      defeated.capitalX >= 0 &&
+      defeated.capitalX < GRID_W &&
+      defeated.capitalY >= 0 &&
+      defeated.capitalY < GRID_H
+    ) {
+      const capIdx = defeated.capitalY * GRID_W + defeated.capitalX;
+      if (this.prop[capIdx] === PropType.CHECKOUT_FLAG) {
+        this.prop[capIdx] = PropType.SPOTLIGHT;
+        this.propHp[capIdx] = 150;
+        this.propMaxHp[capIdx] = 150;
+        this.propOwner[capIdx] = victor.id;
+      }
+    }
+    if (this.chunkStore.size > 0) {
+      this.transferNationInChunkStore(defeated.id, victor.id);
     }
 
     for (const u of this.units) {
@@ -4122,7 +4603,7 @@ export class SimEngine {
         const tx = gx + dx;
         const ty = gy + dy;
         if (tx < 1 || tx >= GRID_W - 1 || ty < 1 || ty >= GRID_H - 1) continue;
-        if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 1) continue;
+        if (Math.hypot(tx - this.summitLocalX, ty - this.summitLocalY) <= SUMMIT_RADIUS + 1) continue;
         const idx = ty * GRID_W + tx;
         if (this.territory[idx] === centerOwner) {
           // Do not steal an intact living Checkout Flag without breaking it first
@@ -4196,7 +4677,24 @@ export class SimEngine {
   }
 
   private recountTerritoryAndHousing(): void {
+    const prevHibStats = new Map<
+      number,
+      {
+        armyCount: number;
+        armyCap: number;
+        jobs: Nation['jobs'];
+        buildings: Nation['buildings'];
+      }
+    >();
     for (const n of this.nations) {
+      if ((this.hibernatedNationPop.get(n.id) ?? 0) > 0 || (this.hibernatedNationTerr.get(n.id) ?? 0) > 0) {
+        prevHibStats.set(n.id, {
+          armyCount: n.armyCount ?? 0,
+          armyCap: n.armyCap ?? 0,
+          jobs: n.jobs ? { ...n.jobs } : undefined,
+          buildings: n.buildings ? { ...n.buildings } : undefined,
+        });
+      }
       n.territoryTiles = 0;
       n.population = 0;
       n.armyCount = 0;
@@ -4330,6 +4828,22 @@ export class SimEngine {
         continue;
       }
 
+      // Add hibernating off-window territory & citizens in Infinite Chunk Store mode
+      const hibTerr = this.hibernatedNationTerr.get(n.id) ?? 0;
+      const hibPop = this.hibernatedNationPop.get(n.id) ?? 0;
+      const activePop = n.population;
+      n.territoryTiles += hibTerr;
+      n.population += hibPop;
+      if (activePop === 0 && hibPop > 0) {
+        const prev = prevHibStats.get(n.id);
+        if (prev) {
+          if (prev.buildings) n.buildings = prev.buildings;
+          if (prev.jobs) n.jobs = prev.jobs;
+          n.armyCount = prev.armyCount;
+          n.armyCap = prev.armyCap;
+        }
+      }
+
       n.housingCap = this.computeTerritoryResourcePopCap(n);
 
       // Eliminate kingdom immediately if 0 territories OR 0 living people remain!
@@ -4360,6 +4874,10 @@ export class SimEngine {
         } else {
           this.markKingdomDepopulated(n, 'all citizens perished');
         }
+        continue;
+      }
+
+      if (activePop === 0 && hibPop > 0) {
         continue;
       }
 
@@ -4575,7 +5093,7 @@ export class SimEngine {
           u.alive &&
           u.nationId === -1 &&
           (u.kind === UnitKind.STAFF_MANAGER || u.kind === UnitKind.STAFF_WARDEN) &&
-          Math.hypot(u.x - SUMMIT_X, u.y - SUMMIT_Y) > SUMMIT_RADIUS + 6 &&
+          Math.hypot(u.x - this.summitLocalX, u.y - this.summitLocalY) > SUMMIT_RADIUS + 6 &&
           this.territory[Math.max(0, Math.min(GRID_W * GRID_H - 1, (u.y | 0) * GRID_W + (u.x | 0)))] === -1
       );
       if (organizer) {
@@ -4747,9 +5265,14 @@ export class SimEngine {
       else if (n.taxRate === 'High') happyDelta -= 0.7;
       else if (n.taxRate === 'War Tax') happyDelta -= 1.5;
 
-      const capIdx = n.capitalY * GRID_W + n.capitalX;
-      if (this.lightMap[capIdx]) happyDelta += 0.3;
-      else if (this.isNight) happyDelta -= 1.2;
+      const inWindow = this.isNationInWindow(n);
+      if (inWindow) {
+        const capIdx = Math.max(0, Math.min(GRID_W * GRID_H - 1, (n.capitalY | 0) * GRID_W + (n.capitalX | 0)));
+        if (this.lightMap[capIdx]) happyDelta += 0.3;
+        else if (this.isNight) happyDelta -= 1.2;
+      } else {
+        happyDelta += 0.1;
+      }
 
       if (n.warExhaustion > 40) happyDelta -= 0.9;
 
@@ -4766,7 +5289,7 @@ export class SimEngine {
       }
 
       // Civil Wars, Separatist Breakaways & Coups if Happiness < 20%
-      if (n.happiness < 20) {
+      if (inWindow && n.happiness < 20) {
         n.lowHappinessTimer++;
         if (n.lowHappinessTimer >= 7 && n.population >= 10 && this.day - n.recentCoupDay >= 1) {
           n.lowHappinessTimer = 0;
@@ -4785,6 +5308,7 @@ export class SimEngine {
       // True Population Reproduction: requires >= 2 living people, food, and territory/resource capacity
       // Tuned so kingdoms can meaningfully recover from Night Staff raids & wars without zombie respawns
       if (
+        inWindow &&
         n.population >= 2 &&
         activeSurvivors < this.maxPopulation &&
         n.population < n.housingCap &&
@@ -4863,12 +5387,13 @@ export class SimEngine {
       }
 
       // Gradual outward territory expansion into unclaimed or abandoned/depopulated ruins
-      if (n.population >= 2 && Math.random() < 0.38) {
+      if (inWindow && n.population >= 2 && Math.random() < 0.38) {
         this.expandFrontierTerritory(n);
       }
 
       // Overcrowded Colony Split (can also colonize abandoned depopulated territory)
       if (
+        inWindow &&
         n.population >= 32 &&
         n.meatballs >= 50 &&
         this.nations.filter((x) => x.alive).length < 10 &&
@@ -4881,11 +5406,11 @@ export class SimEngine {
       n.cartCooldown -= 1;
       const depotBonus = Math.min(4, n.buildings?.depots || 0);
       const cartCadence = Math.max(4, (n.government === 'Merchant Republic' ? 7 : 12) - depotBonus);
-      if (n.cartCooldown <= 0 && !this.isNight) {
+      if (inWindow && n.cartCooldown <= 0 && !this.isNight) {
         n.cartCooldown = cartCadence;
         const tradePartners: Nation[] = [];
         for (const other of this.nations) {
-          if (!other.alive || other.id === n.id) continue;
+          if (!other.alive || other.id === n.id || !this.isNationInWindow(other)) continue;
           const st = this.getStance(n.id, other.id);
           if (st === 'UNION') {
             // Union partners trade twice as actively
@@ -4898,7 +5423,9 @@ export class SimEngine {
         if (this.units.length < this.maxPopulation + 120) {
           if (canRunInternalHub && (tradePartners.length === 0 || Math.random() < 0.4)) {
             const hub = n.unionHubs![(Math.random() * n.unionHubs!.length) | 0];
-            this.spawnTradeCart(n, n, { x: hub.x + 0.5, y: hub.y + 0.5, label: hub.name });
+            if (hub.x >= 2 && hub.x < GRID_W - 2 && hub.y >= 2 && hub.y < GRID_H - 2) {
+              this.spawnTradeCart(n, n, { x: hub.x + 0.5, y: hub.y + 0.5, label: hub.name });
+            }
           } else if (tradePartners.length > 0) {
             const partner = tradePartners[(Math.random() * tradePartners.length) | 0];
             this.spawnTradeCart(n, partner);
@@ -5149,7 +5676,7 @@ export class SimEngine {
           const px = cx + dx;
           const py = cy + dy;
           if (px < 2 || px >= GRID_W - 2 || py < 2 || py >= GRID_H - 2) continue;
-          if (Math.hypot(px - SUMMIT_X, py - SUMMIT_Y) <= SUMMIT_RADIUS + 1) continue;
+          if (Math.hypot(px - this.summitLocalX, py - this.summitLocalY) <= SUMMIT_RADIUS + 1) continue;
           const pIdx = py * GRID_W + px;
           const pOwner = this.territory[pIdx];
           if (pOwner === -1 || (pOwner >= 0 && !this.nations[pOwner]?.alive)) {
@@ -5183,7 +5710,7 @@ export class SimEngine {
         const tx = Math.round(n.capitalX + cosA * r);
         const ty = Math.round(n.capitalY + sinA * r);
         if (tx < 2 || tx >= GRID_W - 2 || ty < 2 || ty >= GRID_H - 2) break;
-        if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 1) break;
+        if (Math.hypot(tx - this.summitLocalX, ty - this.summitLocalY) <= SUMMIT_RADIUS + 1) break;
 
         const idx = ty * GRID_W + tx;
         const owner = this.territory[idx];
@@ -5210,7 +5737,7 @@ export class SimEngine {
         const gx = u.x | 0;
         const gy = u.y | 0;
         if (gx < 2 || gx >= GRID_W - 2 || gy < 2 || gy >= GRID_H - 2) continue;
-        if (Math.hypot(gx - SUMMIT_X, gy - SUMMIT_Y) <= SUMMIT_RADIUS + 1) continue;
+        if (Math.hypot(gx - this.summitLocalX, gy - this.summitLocalY) <= SUMMIT_RADIUS + 1) continue;
         const idx = gy * GRID_W + gx;
         const owner = this.territory[idx];
         if (owner === -1 || (owner >= 0 && !this.nations[owner]?.alive)) {
@@ -5243,7 +5770,7 @@ export class SimEngine {
     const dist = 28 + Math.random() * 18;
     const cx = Math.max(10, Math.min(GRID_W - 10, (parent.capitalX + Math.cos(angle) * dist) | 0));
     const cy = Math.max(10, Math.min(GRID_H - 10, (parent.capitalY + Math.sin(angle) * dist) | 0));
-    if (Math.hypot(cx - SUMMIT_X, cy - SUMMIT_Y) <= SUMMIT_RADIUS + 5) return;
+    if (Math.hypot(cx - this.summitLocalX, cy - this.summitLocalY) <= SUMMIT_RADIUS + 5) return;
 
     const existingOwner = this.territory[cy * GRID_W + cx];
     const existingNation = existingOwner >= 0 ? this.getNation(existingOwner) : undefined;
@@ -5258,7 +5785,7 @@ export class SimEngine {
         if (dx * dx + dy * dy <= 18) {
           const tx = cx + dx;
           const ty = cy + dy;
-          if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 1) continue;
+          if (Math.hypot(tx - this.summitLocalX, ty - this.summitLocalY) <= SUMMIT_RADIUS + 1) continue;
           const idx = ty * GRID_W + tx;
           const tOwner = this.territory[idx];
           if (tOwner !== -1 && this.nations[tOwner]?.alive) continue;
@@ -5391,7 +5918,7 @@ export class SimEngine {
 
     const isValidCapSpot = (tx: number, ty: number) => {
       if (tx < 8 || tx > GRID_W - 8 || ty < 8 || ty > GRID_H - 8) return false;
-      if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 4) return false;
+      if (Math.hypot(tx - this.summitLocalX, ty - this.summitLocalY) <= SUMMIT_RADIUS + 4) return false;
       if (this.nations.some((n) => n.alive && Math.hypot(n.capitalX - tx, n.capitalY - ty) < minCapDist)) {
         return false;
       }
@@ -5435,7 +5962,7 @@ export class SimEngine {
         const tx = cx + dx;
         const ty = cy + dy;
         if (tx <= 1 || tx >= GRID_W - 1 || ty <= 1 || ty >= GRID_H - 1) continue;
-        if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 1) continue;
+        if (Math.hypot(tx - this.summitLocalX, ty - this.summitLocalY) <= SUMMIT_RADIUS + 1) continue;
         const idx = ty * GRID_W + tx;
         const existingOwner = this.territory[idx];
         if (existingOwner >= 0 && this.nations[existingOwner]?.alive) continue;
@@ -5615,7 +6142,7 @@ export class SimEngine {
     let cy = Math.max(8, Math.min(GRID_H - 8, founder.y | 0));
     const isSpotClear = (tx: number, ty: number) => {
       if (tx < 8 || tx > GRID_W - 8 || ty < 8 || ty > GRID_H - 8) return false;
-      if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 4) return false;
+      if (Math.hypot(tx - this.summitLocalX, ty - this.summitLocalY) <= SUMMIT_RADIUS + 4) return false;
       if (this.nations.some((n) => n.alive && Math.hypot(n.capitalX - tx, n.capitalY - ty) < 8)) return false;
       const owner = this.territory[ty * GRID_W + tx];
       return owner < 0 || !this.nations[owner]?.alive;
@@ -5662,7 +6189,7 @@ export class SimEngine {
         const tx = cx + dx;
         const ty = cy + dy;
         if (tx <= 1 || tx >= GRID_W - 1 || ty <= 1 || ty >= GRID_H - 1) continue;
-        if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 1) continue;
+        if (Math.hypot(tx - this.summitLocalX, ty - this.summitLocalY) <= SUMMIT_RADIUS + 1) continue;
         const idx = ty * GRID_W + tx;
         const owner = this.territory[idx];
         if (owner >= 0 && this.nations[owner]?.alive) continue;
@@ -6229,7 +6756,7 @@ export class SimEngine {
       for (let attempt = 0; attempt < 90 && dropped < 22; attempt++) {
         const tx = 8 + ((Math.random() * (GRID_W - 16)) | 0);
         const ty = 8 + ((Math.random() * (GRID_H - 16)) | 0);
-        if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 4) continue;
+        if (Math.hypot(tx - this.summitLocalX, ty - this.summitLocalY) <= SUMMIT_RADIUS + 4) continue;
         const idx = ty * GRID_W + tx;
         if (this.territory[idx] === -1 && this.prop[idx] === PropType.NONE) {
           const vat = Math.random() < 0.5;
@@ -6269,7 +6796,7 @@ export class SimEngine {
     if (mercs < 4) {
       const tx = 14 + ((Math.random() * (GRID_W - 28)) | 0);
       const ty = 14 + ((Math.random() * (GRID_H - 28)) | 0);
-      if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) > SUMMIT_RADIUS + 6) {
+      if (Math.hypot(tx - this.summitLocalX, ty - this.summitLocalY) > SUMMIT_RADIUS + 6) {
         this.spawnMercenary(tx + 0.5, ty + 0.5);
       }
     }
@@ -7264,7 +7791,7 @@ export class SimEngine {
         const tileIdx = Math.max(0, Math.min(GRID_W * GRID_H - 1, (u.y | 0) * GRID_W + (u.x | 0)));
         const tileOwner = this.territory[tileIdx];
         const onLivingNation = tileOwner >= 0 && Boolean(this.nations[tileOwner]?.alive);
-        const inSummit = Math.hypot(u.x - SUMMIT_X, u.y - SUMMIT_Y) <= SUMMIT_RADIUS + 4;
+        const inSummit = Math.hypot(u.x - this.summitLocalX, u.y - this.summitLocalY) <= SUMMIT_RADIUS + 4;
 
         if (!onLivingNation && !inSummit && u.settleTimer >= 0.85) {
           const nearbySettlers: Unit[] = [];
@@ -7430,19 +7957,19 @@ export class SimEngine {
           [-1.6, 1.6],
           [1.6, -1.6],
         ];
-        let sx = SUMMIT_X + 0.5;
-        let sy = SUMMIT_Y + 0.5;
+        let sx = this.summitLocalX + 0.5;
+        let sy = this.summitLocalY + 0.5;
         if (seatIdx < couchOffsets.length) {
-          sx = SUMMIT_X + 0.5 + couchOffsets[seatIdx][0];
-          sy = SUMMIT_Y + 0.5 + couchOffsets[seatIdx][1];
+          sx = this.summitLocalX + 0.5 + couchOffsets[seatIdx][0];
+          sy = this.summitLocalY + 0.5 + couchOffsets[seatIdx][1];
         } else {
           const totalSeats = Math.max(1, invitedNations.length);
           const seatAngle = (seatIdx / totalSeats) * Math.PI * 2;
-          sx = SUMMIT_X + 0.5 + Math.cos(seatAngle) * 2.5;
-          sy = SUMMIT_Y + 0.5 + Math.sin(seatAngle) * 2.5;
+          sx = this.summitLocalX + 0.5 + Math.cos(seatAngle) * 2.5;
+          sy = this.summitLocalY + 0.5 + Math.sin(seatAngle) * 2.5;
         }
         const distToSeat = Math.hypot(u.x - sx, u.y - sy);
-        const distToLounge = Math.hypot(u.x - (SUMMIT_X + 0.5), u.y - (SUMMIT_Y + 0.5));
+        const distToLounge = Math.hypot(u.x - (this.summitLocalX + 0.5), u.y - (this.summitLocalY + 0.5));
 
         if (distToSeat > 0.65) {
           const prevX = u.x;
@@ -7760,7 +8287,7 @@ export class SimEngine {
       const tx = Math.max(1, Math.min(GRID_W - 2, u.x | 0));
       const ty = Math.max(1, Math.min(GRID_H - 2, u.y | 0));
       const idx = ty * GRID_W + tx;
-      const inSummitZone = Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 1;
+      const inSummitZone = Math.hypot(tx - this.summitLocalX, ty - this.summitLocalY) <= SUMMIT_RADIUS + 1;
 
       if (!u.hasTarget) {
         u.buildProp = undefined;
@@ -7817,7 +8344,7 @@ export class SimEngine {
           const bx = Math.max(1, Math.min(GRID_W - 2, u.targetX | 0));
           const by = Math.max(1, Math.min(GRID_H - 2, u.targetY | 0));
           const bIdx = by * GRID_W + bx;
-          const bInSummit = Math.hypot(bx - SUMMIT_X, by - SUMMIT_Y) <= SUMMIT_RADIUS + 2;
+          const bInSummit = Math.hypot(bx - this.summitLocalX, by - this.summitLocalY) <= SUMMIT_RADIUS + 2;
 
           // Clear any blocking IKEA store furniture on the blueprint tile & salvage its materials
           const existing = this.prop[bIdx];
@@ -7867,7 +8394,7 @@ export class SimEngine {
                   const cx = bx + dx;
                   const cy = by + dy;
                   if (cx < 1 || cx >= GRID_W - 1 || cy < 1 || cy >= GRID_H - 1) continue;
-                  if (Math.hypot(cx - SUMMIT_X, cy - SUMMIT_Y) <= SUMMIT_RADIUS + 1) continue;
+                  if (Math.hypot(cx - this.summitLocalX, cy - this.summitLocalY) <= SUMMIT_RADIUS + 1) continue;
                   const cIdx = cy * GRID_W + cx;
                   const cOwner = this.territory[cIdx];
                   if (cOwner === -1 || (cOwner >= 0 && !this.nations[cOwner]?.alive)) {
@@ -8515,7 +9042,7 @@ export class SimEngine {
         const a = (sample / samples) * Math.PI * 2 + Math.random() * 0.35;
         const tx = Math.max(1, Math.min(GRID_W - 2, (sx + Math.cos(a) * ring) | 0));
         const ty = Math.max(1, Math.min(GRID_H - 2, (sy + Math.sin(a) * ring) | 0));
-        if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 2) continue;
+        if (Math.hypot(tx - this.summitLocalX, ty - this.summitLocalY) <= SUMMIT_RADIUS + 2) continue;
         const idx = ty * GRID_W + tx;
         const p = this.prop[idx];
         if (preferTimber) {
@@ -8721,12 +9248,14 @@ export class SimEngine {
           );
         }
 
-        const hasAnyLivingCitizen = this.units.some(
-          (other) =>
-            other.alive &&
-            this.isNationCitizen(other) &&
-            other.nationId === victimNation.id
-        );
+        const hasAnyLivingCitizen =
+          (this.hibernatedNationPop.get(victimNation.id) ?? 0) > 0 ||
+          this.units.some(
+            (other) =>
+              other.alive &&
+              this.isNationCitizen(other) &&
+              other.nationId === victimNation.id
+          );
 
         if (!hasAnyLivingCitizen) {
           if (
@@ -9103,7 +9632,7 @@ export class SimEngine {
           targetNation.allenWrenches += 35;
           targetNation.happiness = Math.min(100, targetNation.happiness + 8);
           const idx = ty * GRID_W + tx;
-          const inSummit = Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 1;
+          const inSummit = Math.hypot(tx - this.summitLocalX, ty - this.summitLocalY) <= SUMMIT_RADIUS + 1;
           if (!inSummit && this.prop[idx] === PropType.NONE) {
             this.placeNationProp(tx, ty, PropType.SPOTLIGHT, 180, targetNation.id);
             this.dirtyLight = true;
@@ -9360,7 +9889,7 @@ export class SimEngine {
             const nx = tx + dx;
             const ny = ty + dy;
             if (nx <= 2 || nx >= GRID_W - 2 || ny <= 2 || ny >= GRID_H - 2) continue;
-            if (Math.hypot(nx - SUMMIT_X, ny - SUMMIT_Y) <= SUMMIT_RADIUS + 1) continue;
+            if (Math.hypot(nx - this.summitLocalX, ny - this.summitLocalY) <= SUMMIT_RADIUS + 1) continue;
             const idx = ny * GRID_W + nx;
             if (this.prop[idx] !== PropType.NONE) continue;
             const roll = Math.random();
@@ -9429,7 +9958,7 @@ export class SimEngine {
             const nx = tx + dx;
             const ny = ty + dy;
             if (nx <= 2 || nx >= GRID_W - 2 || ny <= 2 || ny >= GRID_H - 2) continue;
-            if (Math.hypot(nx - SUMMIT_X, ny - SUMMIT_Y) <= SUMMIT_RADIUS + 1) continue;
+            if (Math.hypot(nx - this.summitLocalX, ny - this.summitLocalY) <= SUMMIT_RADIUS + 1) continue;
             const idx = ny * GRID_W + nx;
             if (this.prop[idx] !== PropType.NONE) continue;
             const kind = dropped % 3 === 0 ? PropType.MEATBALL_VAT : dropped % 3 === 1 ? PropType.WOOD_PALLET : PropType.SHELF;
@@ -9574,7 +10103,7 @@ export class SimEngine {
       case 'build_tech_lab':
       case 'build_escalator': {
         const idx = ty * GRID_W + tx;
-        const inSummit = Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 1;
+        const inSummit = Math.hypot(tx - this.summitLocalX, ty - this.summitLocalY) <= SUMMIT_RADIUS + 1;
         if (inSummit || this.prop[idx] === PropType.CHECKOUT_FLAG) {
           this.spawnFloatingText(tx, ty - 1, 'Protected tile', '#94a3b8');
           break;
@@ -10353,10 +10882,15 @@ export class SimEngine {
       }
     }
 
-    // 2b. Showroom Lounge Rug & Central Coffee Table at (SUMMIT_X, SUMMIT_Y)
-    {
-      const lx = (SUMMIT_X + 0.5) * TILE_SIZE;
-      const ly = (SUMMIT_Y + 0.5) * TILE_SIZE;
+    // 2b. Showroom Lounge Rug & Central Coffee Table at (this.summitLocalX, this.summitLocalY)
+    if (
+      this.summitLocalX >= minTx - 6 &&
+      this.summitLocalX <= maxTx + 6 &&
+      this.summitLocalY >= minTy - 6 &&
+      this.summitLocalY <= maxTy + 6
+    ) {
+      const lx = (this.summitLocalX + 0.5) * TILE_SIZE;
+      const ly = (this.summitLocalY + 0.5) * TILE_SIZE;
       ctx.save();
       ctx.fillStyle = this.summitLoungeSessionActive || this.summitActiveTimer > 0
         ? 'rgba(0, 88, 163, 0.28)'
@@ -10863,10 +11397,10 @@ export class SimEngine {
       ctx.textAlign = 'center';
       ctx.fillStyle = 'rgba(226, 232, 240, 0.28)';
       const departments = [
-        { x: 46, y: 38, label: 'SELF-SERVE WAREHOUSE' },
-        { x: 188, y: 40, label: 'BEDDING & SHOWROOM' },
-        { x: 52, y: 138, label: 'FOOD COURT WEST' },
-        { x: 186, y: 140, label: 'DARK AS-IS SECTOR' },
+        { x: 46 - this.originTx, y: 38 - this.originTy, label: 'SELF-SERVE WAREHOUSE' },
+        { x: 188 - this.originTx, y: 40 - this.originTy, label: 'BEDDING & SHOWROOM' },
+        { x: 52 - this.originTx, y: 138 - this.originTy, label: 'FOOD COURT WEST' },
+        { x: 186 - this.originTx, y: 140 - this.originTy, label: 'DARK AS-IS SECTOR' },
       ];
       for (const dept of departments) {
         if (dept.x >= minTx - 12 && dept.x <= maxTx + 12 && dept.y >= minTy - 12 && dept.y <= maxTy + 12) {
@@ -10883,8 +11417,8 @@ export class SimEngine {
     this.summitBannerHitbox = null;
 
     {
-      const lsx = ((SUMMIT_X + 0.5) * TILE_SIZE - this.camera.x) * zoom + viewW * 0.5;
-      const lsy = ((SUMMIT_Y - 5.2) * TILE_SIZE - this.camera.y) * zoom + viewH * 0.5;
+      const lsx = ((this.summitLocalX + 0.5) * TILE_SIZE - this.camera.x) * zoom + viewW * 0.5;
+      const lsy = ((this.summitLocalY - 5.2) * TILE_SIZE - this.camera.y) * zoom + viewH * 0.5;
       if (lsx >= -140 && lsx <= viewW + 140 && lsy >= -40 && lsy <= viewH + 40) {
         const active = this.summitLoungeSessionActive || this.summitActiveTimer > 0;
         const label = this.summitLoungeSessionActive
@@ -11111,6 +11645,9 @@ export class SimEngine {
       auditNight: this.isNight && this.day % 10 === 0,
       activeAnomaly: this.activeAnomaly ? { ...this.activeAnomaly } : null,
       allowWildStaffKingdoms: this.allowWildStaffKingdoms,
+      infiniteWorldMode: this.infiniteWorldMode,
+      originTx: this.originTx,
+      originTy: this.originTy,
     };
   }
 }

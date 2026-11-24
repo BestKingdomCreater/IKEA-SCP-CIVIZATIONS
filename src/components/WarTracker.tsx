@@ -8,6 +8,8 @@ interface WarTrackerProps {
   summitActive: boolean;
   isNight: boolean;
   isMobile: boolean;
+  originTx?: number;
+  originTy?: number;
   onSelectNation: (nationId: number) => void;
   onPanToTile: (tx: number, ty: number) => void;
   onOpenSummitLounge: () => void;
@@ -24,6 +26,8 @@ export const WarTracker: React.FC<WarTrackerProps> = ({
   summitActive,
   isNight,
   isMobile,
+  originTx = 0,
+  originTy = 0,
   onSelectNation,
   onPanToTile,
   onOpenSummitLounge,
@@ -342,7 +346,7 @@ export const WarTracker: React.FC<WarTrackerProps> = ({
             <button
               type="button"
               onClick={() => {
-                onPanToTile(SUMMIT_X, SUMMIT_Y);
+                onPanToTile(SUMMIT_X - originTx, SUMMIT_Y - originTy);
                 onOpenSummitLounge();
               }}
               className="px-2 py-1 rounded bg-[#0058a3] hover:bg-sky-700 text-[#ffda1a] text-[10px] font-semibold transition-colors whitespace-nowrap shrink-0"

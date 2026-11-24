@@ -486,6 +486,9 @@ export interface HudSnapshot {
   auditNight?: boolean;
   activeAnomaly?: ActiveAnomaly | null;
   allowWildStaffKingdoms?: boolean;
+  infiniteWorldMode?: boolean;
+  originTx?: number;
+  originTy?: number;
 }
 
 export interface InspectedBuilding {

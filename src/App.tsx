@@ -20,8 +20,6 @@ import {
   SUMMIT_X,
   SUMMIT_Y,
   TILE_SIZE,
-  WORLD_PX_H,
-  WORLD_PX_W,
 } from './game/constants';
 import {
   getStoredGeminiKey,
@@ -160,13 +158,15 @@ export default function App() {
     auditNight: false,
     activeAnomaly: null,
     allowWildStaffKingdoms: false,
+    infiniteWorldMode: false,
+    originTx: 0,
+    originTy: 0,
   }));
 
   const panToTile = useCallback((tx: number, ty: number) => {
     const eng = engineRef.current;
     if (!eng) return;
-    eng.camera.x = Math.max(0, Math.min(WORLD_PX_W, tx * TILE_SIZE));
-    eng.camera.y = Math.max(0, Math.min(WORLD_PX_H, ty * TILE_SIZE));
+    eng.panToTile(tx, ty);
     if (eng.camera.zoom < 1.5) {
       eng.camera.zoom = 1.8;
     }
@@ -376,7 +376,7 @@ export default function App() {
       eng.paused = false;
     }
 
-    panToTile(SUMMIT_X + 0.5, SUMMIT_Y + 0.5);
+    panToTile(SUMMIT_X - eng.originTx + 0.5, SUMMIT_Y - eng.originTy + 0.5);
     eng.setSummitLoungeSession(true);
 
     setSummitMessages([]);
@@ -395,7 +395,8 @@ export default function App() {
     setInspectedUnit(null);
     setInspectedBuilding(null);
     setFollowUnitId(null);
-    panToTile(SUMMIT_X + 0.5, SUMMIT_Y + 0.5);
+    const eng = engineRef.current;
+    panToTile(SUMMIT_X - (eng?.originTx ?? 0) + 0.5, SUMMIT_Y - (eng?.originTy ?? 0) + 0.5);
   }, [panToTile]);
 
   const handleToggleSummitLounge = useCallback(() => {
@@ -406,7 +407,8 @@ export default function App() {
         setInspectedUnit(null);
         setInspectedBuilding(null);
         setFollowUnitId(null);
-        panToTile(SUMMIT_X + 0.5, SUMMIT_Y + 0.5);
+        const eng = engineRef.current;
+        panToTile(SUMMIT_X - (eng?.originTx ?? 0) + 0.5, SUMMIT_Y - (eng?.originTy ?? 0) + 0.5);
       }
       return next;
     });
@@ -625,8 +627,7 @@ export default function App() {
         }
       }
 
-      eng.camera.x = Math.max(0, Math.min(WORLD_PX_W, eng.camera.x));
-      eng.camera.y = Math.max(0, Math.min(WORLD_PX_H, eng.camera.y));
+      eng.updateCameraAndStream();
 
       const canvas = canvasRef.current;
       if (canvas) {
@@ -885,8 +886,7 @@ export default function App() {
         eng.camera.zoom = newZoom;
       }
 
-      eng.camera.x = Math.max(0, Math.min(WORLD_PX_W, eng.camera.x));
-      eng.camera.y = Math.max(0, Math.min(WORLD_PX_H, eng.camera.y));
+      eng.updateCameraAndStream();
       lastPanCenterRef.current = { x: cx, y: cy };
       return;
     }
@@ -895,8 +895,9 @@ export default function App() {
       if (isPanningMouseRef.current && lastPanCenterRef.current) {
         const dx = e.clientX - lastPanCenterRef.current.x;
         const dy = e.clientY - lastPanCenterRef.current.y;
-        eng.camera.x = Math.max(0, Math.min(WORLD_PX_W, eng.camera.x - dx / eng.camera.zoom));
-        eng.camera.y = Math.max(0, Math.min(WORLD_PX_H, eng.camera.y - dy / eng.camera.zoom));
+        eng.camera.x -= dx / eng.camera.zoom;
+        eng.camera.y -= dy / eng.camera.zoom;
+        eng.updateCameraAndStream();
         lastPanCenterRef.current = { x: e.clientX, y: e.clientY };
         return;
       }
@@ -969,8 +970,7 @@ export default function App() {
     eng.camera.x += relX * (1 / oldZoom - 1 / newZoom);
     eng.camera.y += relY * (1 / oldZoom - 1 / newZoom);
     eng.camera.zoom = newZoom;
-    eng.camera.x = Math.max(0, Math.min(WORLD_PX_W, eng.camera.x));
-    eng.camera.y = Math.max(0, Math.min(WORLD_PX_H, eng.camera.y));
+    eng.updateCameraAndStream();
   };
 
   const handleWhisper = async (nationId: number, message: string): Promise<string> => {
@@ -1151,6 +1151,8 @@ export default function App() {
             summitActive={hud.summitActive}
             isNight={hud.isNight}
             isMobile={isPhone}
+            originTx={hud.originTx ?? 0}
+            originTy={hud.originTy ?? 0}
             onSelectNation={(nid) => {
               setSelectedNationId(nid);
               setInspectedUnit(null);
@@ -1260,7 +1262,10 @@ export default function App() {
             onTogglePauseSession={() => setSummitSessionPaused((p) => !p)}
             onEndSession={finishSummitLoungeSession}
             onNextTurn={(topicOverride) => void runSummitLoungeTurn(topicOverride, false)}
-            onFocusLounge={() => panToTile(SUMMIT_X + 0.5, SUMMIT_Y + 0.5)}
+            onFocusLounge={() => {
+              const eng = engineRef.current;
+              panToTile(SUMMIT_X - (eng?.originTx ?? 0) + 0.5, SUMMIT_Y - (eng?.originTy ?? 0) + 0.5);
+            }}
             onClose={() => setShowSummitLounge(false)}
           />
         )}
@@ -1372,6 +1377,7 @@ export default function App() {
           soundEnabled={soundEnabled}
           musicEnabled={musicEnabled}
           allowWildStaffKingdoms={Boolean(hud.allowWildStaffKingdoms)}
+          infiniteWorldMode={Boolean(hud.infiniteWorldMode)}
           isMobile={isPhone}
           onChangeMaxPop={setMaxPop}
           onChangeWorldPreset={(preset) => setWorldPreset(preset)}
@@ -1383,6 +1389,11 @@ export default function App() {
           onToggleWildStaffKingdoms={() => {
             if (!engineRef.current) return;
             engineRef.current.setAllowWildStaffKingdoms(!engineRef.current.allowWildStaffKingdoms);
+            setHud(engineRef.current.getHudSnapshot(hud.fps));
+          }}
+          onToggleInfiniteWorld={() => {
+            if (!engineRef.current) return;
+            engineRef.current.setInfiniteWorldMode(!engineRef.current.infiniteWorldMode);
             setHud(engineRef.current.getHudSnapshot(hud.fps));
           }}
           onResetWorld={(preset) => {

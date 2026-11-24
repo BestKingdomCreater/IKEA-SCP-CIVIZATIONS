@@ -1,5 +1,5 @@
 import React from 'react';
-import { Crown, Map, Music, Volume2, VolumeX, X } from 'lucide-react';
+import { Crown, Infinity as InfinityIcon, Map, Music, Volume2, VolumeX, X } from 'lucide-react';
 import { WorldPreset } from '../game/types';
 
 interface SettingsModalProps {
@@ -8,12 +8,14 @@ interface SettingsModalProps {
   soundEnabled: boolean;
   musicEnabled: boolean;
   allowWildStaffKingdoms: boolean;
+  infiniteWorldMode: boolean;
   isMobile: boolean;
   onChangeMaxPop: (val: number) => void;
   onChangeWorldPreset: (preset: WorldPreset) => void;
   onToggleSound: () => void;
   onToggleMusic: () => void;
   onToggleWildStaffKingdoms: () => void;
+  onToggleInfiniteWorld: () => void;
   onResetWorld: (preset?: WorldPreset) => void;
   onClose: () => void;
 }
@@ -31,12 +33,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   soundEnabled,
   musicEnabled,
   allowWildStaffKingdoms,
+  infiniteWorldMode,
   isMobile,
   onChangeMaxPop,
   onChangeWorldPreset,
   onToggleSound,
   onToggleMusic,
   onToggleWildStaffKingdoms,
+  onToggleInfiniteWorld,
   onResetWorld,
   onClose,
 }) => {
@@ -156,6 +160,25 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               >
                 <Crown className="w-3.5 h-3.5" />
                 <span>{allowWildStaffKingdoms ? 'Allowed' : 'Manual'}</span>
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between gap-2 pt-1">
+              <div>
+                <div className="font-medium text-slate-200">Infinite Chunk Store</div>
+                <div className="text-[11px] text-slate-400">Stream endless 30×30 IKEA sectors as you pan</div>
+              </div>
+              <button
+                type="button"
+                onClick={onToggleInfiniteWorld}
+                className={`min-h-[38px] px-3 py-1.5 rounded-lg border font-semibold flex items-center gap-1.5 shrink-0 ${
+                  infiniteWorldMode
+                    ? 'bg-cyan-950/70 border-cyan-500 text-cyan-200'
+                    : 'bg-slate-800 border-slate-700 text-slate-400'
+                }`}
+              >
+                <InfinityIcon className="w-3.5 h-3.5" />
+                <span>{infiniteWorldMode ? 'Infinite' : 'Fixed'}</span>
               </button>
             </div>
           </div>

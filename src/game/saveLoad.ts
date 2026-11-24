@@ -23,6 +23,10 @@ export interface SerializedWorldV1 {
   lastAutoSummitDay: number;
   summitDiscussed: boolean;
   allowWildStaffKingdoms?: boolean;
+  infiniteWorldMode?: boolean;
+  originTx?: number;
+  originTy?: number;
+  worldSeed?: number;
   activeAnomaly?: ActiveAnomaly | null;
   camera: { x: number; y: number; zoom: number };
   nations: Nation[];
