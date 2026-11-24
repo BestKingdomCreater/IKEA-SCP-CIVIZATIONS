@@ -14,6 +14,7 @@ import {
   REBEL_SUFFIXES,
   SETTLER_KINGDOM_NAMES,
   SPOTLIGHT_RADIUS,
+  STAFF_KINGDOM_NAMES,
   SUMMIT_RADIUS,
   SUMMIT_X,
   SUMMIT_Y,
@@ -37,10 +38,12 @@ import { soundFX } from './sound';
 import { SpatialHashGrid } from './spatialHash';
 import { getGlowSprites } from './sprites';
 import {
+  ActiveAnomaly,
   BattlePhase,
   BiomeType,
   BrushSize,
   BuildingPattern,
+  BuildingSpacing,
   ChronicleEntry,
   ChronicleEventType,
   CustomKingdomConfig,
@@ -52,6 +55,7 @@ import {
   HallOfRecords,
   HudSnapshot,
   InspectedBuilding,
+  isStaffKind,
   Nation,
   NewsCategory,
   NewsItem,
@@ -59,6 +63,7 @@ import {
   Projectile,
   PropType,
   SimSpeed,
+  StoreAnomalyType,
   SurvivorRole,
   TaxRate,
   TechId,
@@ -66,8 +71,11 @@ import {
   Unit,
   UnitKind,
   UnitTrait,
+  WeaponType,
   WorldPreset,
 } from './types';
+
+const IS_LITTLE_ENDIAN = new Uint8Array(new Uint32Array([0x11223344]).buffer)[0] === 0x44;
 import { generateIkeaWorld, randomName, randomTraits } from './worldGen';
 
 function createEmptyRecords(): HallOfRecords {
@@ -150,6 +158,7 @@ export class SimEngine {
   public maxPopulation = 2000;
   public isMobileViewport = false;
   public particleScale = 1;
+  public currentFps = 60;
   public worldPreset: WorldPreset = 'standard';
 
   public camera: Camera = {
@@ -171,6 +180,9 @@ export class SimEngine {
   > = new Map();
   private lightSourceIndices: number[] = [];
   private watchtowerIndices: number[] = [];
+  private techLabIndices: number[] = [];
+  private escalatorIndices: number[] = [];
+  private occupiedBuildingsCache: Map<number, { count: number; icon: string }> = new Map();
   private warFrontCache: Map<string, { x: number; y: number; simTime: number }> = new Map();
   private activeBuilderTargets: Set<number> = new Set();
   private deadUnitsCount = 0;
@@ -204,6 +216,26 @@ export class SimEngine {
   private lastAutoSummitDay = 0;
   private summitDiscussed = false;
   private hegemonyClaimed = false;
+  public allowWildStaffKingdoms = false;
+  public activeAnomaly: ActiveAnomaly | null = null;
+  private anomalyCooldownTimer = 75;
+  private caravanMercTimer = 30;
+  private staffAlertTier: 0 | 1 | 2 = 0;
+  private recentStaffSlainWindow = 0;
+  private staffDominanceCheckTimer = 6;
+  private staffPackCooldown = 14;
+  private staffPack: {
+    targetNationId: number;
+    targetX: number;
+    targetY: number;
+    rallyX: number;
+    rallyY: number;
+    phase: 'GATHERING' | 'CHARGING';
+    timer: number;
+    membersCount: number;
+  } | null = null;
+  private viewTilesHalfW = 48;
+  private viewTilesHalfH = 32;
 
   private onDayStartedCallback?: (day: number) => void;
 
@@ -270,6 +302,14 @@ export class SimEngine {
     this.lastAutoSummitDay = 0;
     this.summitDiscussed = false;
     this.hegemonyClaimed = false;
+    this.activeAnomaly = null;
+    this.anomalyCooldownTimer = 75;
+    this.caravanMercTimer = 30;
+    this.staffAlertTier = 0;
+    this.recentStaffSlainWindow = 0;
+    this.staffDominanceCheckTimer = 6;
+    this.staffPackCooldown = 14;
+    this.staffPack = null;
     this.dirtyMap = true;
     this.dirtyLight = true;
     this.forceMapRebuild = true;
@@ -288,6 +328,8 @@ export class SimEngine {
       this.setRelation(0, 1, 'TRADE_PACT');
       this.setRelation(0, 2, 'TRADE_PACT');
       this.setRelation(1, 2, 'WAR');
+      this.connectTradeRoad(this.nations[0], this.nations[1], false);
+      this.connectTradeRoad(this.nations[0], this.nations[2], false);
       this.records.totalWarsDeclared += 1;
       this.addNews('TRADE', `${this.nations[0].name} opened Shopping Cart Trade Pacts with ${this.nations[1].name} & ${this.nations[2].name}.`);
       this.addNews('WAR', `${this.nations[1].name} declared war on ${this.nations[2].name} over Food Court vats!`);
@@ -299,6 +341,8 @@ export class SimEngine {
       );
     }
     this.recountTerritoryAndHousing();
+    this.recomputeLightMap();
+    this.rebuildMapCache();
     this.addNews('DIPLOMACY', 'Day 1: Store lights flicker on. Three survivor nations claim the aisles.');
     this.addChronicle(
       'FOUNDING',
@@ -350,6 +394,8 @@ export class SimEngine {
       summitActiveTimer: this.summitActiveTimer,
       lastAutoSummitDay: this.lastAutoSummitDay,
       summitDiscussed: this.summitDiscussed,
+      allowWildStaffKingdoms: this.allowWildStaffKingdoms,
+      activeAnomaly: this.activeAnomaly ? { ...this.activeAnomaly } : null,
       camera: { ...this.camera },
       nations: this.nations.map((n) => ({
         ...n,
@@ -420,6 +466,8 @@ export class SimEngine {
     this.summitActiveTimer = data.summitActiveTimer || 0;
     this.lastAutoSummitDay = data.lastAutoSummitDay || 0;
     this.summitDiscussed = Boolean(data.summitDiscussed);
+    this.allowWildStaffKingdoms = Boolean(data.allowWildStaffKingdoms);
+    this.activeAnomaly = data.activeAnomaly ? { ...data.activeAnomaly } : null;
     this.summitLoungeSessionActive = false;
     this.summitSpeakingNationId = null;
     this.summitSpeakingTimer = 0;
@@ -600,6 +648,7 @@ export class SimEngine {
       cartCooldown: 6,
       customBuildingPattern: config.buildingPattern,
       buildingPattern: config.buildingPattern,
+      buildingSpacing: config.buildingSpacing,
       researchedTechs: [],
       activeResearchId: null,
       researchPoints: 0,
@@ -780,13 +829,15 @@ export class SimEngine {
       case 'TRADE_PACT':
         if (target && target.alive && target.id !== actor.id) {
           this.setRelation(actor.id, target.id, 'TRADE_PACT');
-          this.addNews('TRADE', `${actor.name} & ${target.name} signed a Shopping Cart Trade Pact!`);
+          this.connectTradeRoad(actor, target);
+          this.addNews('TRADE', `${actor.name} & ${target.name} signed a Shopping Cart Trade Pact & linked trade roads!`);
         }
         break;
       case 'FORM_ALLIANCE':
         if (target && target.alive && target.id !== actor.id) {
           this.setRelation(actor.id, target.id, 'ALLIANCE');
-          this.addNews('DIPLOMACY', `${actor.name} & ${target.name} forged a Grand Alliance!`);
+          this.connectTradeRoad(actor, target);
+          this.addNews('DIPLOMACY', `${actor.name} & ${target.name} forged a Grand Alliance & open cart avenue!`);
         }
         break;
       case 'FORM_UNION':
@@ -796,7 +847,7 @@ export class SimEngine {
           target.happiness = Math.min(100, target.happiness + 5);
           this.connectUnionLandsAndCorridor(actor, target, false);
           this.recountTerritoryAndHousing();
-          this.addNews('UNION', `UNION PACT: ${actor.name} & ${target.name} linked roads & walls for Mutual Trade & Defense!`);
+          this.addNews('UNION', `UNION PACT: ${actor.name} & ${target.name} linked roads & borders for Mutual Trade & Defense!`);
           this.spawnFloatingText(actor.capitalX, actor.capitalY - 2, 'UNION CORRIDOR!', '#fbbf24');
         }
         break;
@@ -811,6 +862,9 @@ export class SimEngine {
         break;
       case 'EMBARGO':
         if (target && target.alive && target.id !== actor.id) {
+          if (this.getStance(actor.id, target.id) === 'UNION') {
+            break;
+          }
           this.setRelation(actor.id, target.id, 'EMBARGO');
           this.addNews('TRADE', `${actor.name} imposed a Shopping Cart Embargo on ${target.name}!`);
         }
@@ -842,7 +896,13 @@ export class SimEngine {
                 this.setRelation(allies[i].id, allies[j].id, 'COALITION');
               }
             }
-            if (allies[i].id !== actor.id && Math.random() < 0.65) {
+            const allyStance = this.getStance(allies[i].id, target.id);
+            if (
+              allies[i].id !== actor.id &&
+              allyStance !== 'UNION' &&
+              allyStance !== 'ALLIANCE' &&
+              Math.random() < 0.65
+            ) {
               this.setRelation(allies[i].id, target.id, 'EMBARGO');
             }
           }
@@ -888,43 +948,257 @@ export class SimEngine {
     return `${aRoot}–${bRoot} Union`.slice(0, 28);
   }
 
-  private connectUnionLandsAndCorridor(a: Nation, b: Nation, isMergedUnion: boolean): void {
+  private isTradeBlockedNation(viewerAId: number, viewerBId: number, ownerId: number): boolean {
+    if (ownerId < 0 || ownerId === viewerAId || ownerId === viewerBId) return false;
+    const owner = this.nations[ownerId];
+    if (!owner || !owner.alive) return false;
+    return (
+      this.getStance(ownerId, viewerAId) === 'EMBARGO' ||
+      this.getStance(ownerId, viewerBId) === 'EMBARGO' ||
+      this.areHostile(ownerId, viewerAId) ||
+      this.areHostile(ownerId, viewerBId)
+    );
+  }
+
+  private buildTradeWaypoints(a: Nation, b: Nation): Array<{ x: number; y: number }> {
     const ax = a.capitalX + 0.5;
     const ay = a.capitalY + 0.5;
     const bx = b.capitalX + 0.5;
     const by = b.capitalY + 0.5;
-    const dx = bx - ax;
-    const dy = by - ay;
-    const totalDist = Math.hypot(dx, dy);
-    if (totalDist < 2) return;
 
-    // Route around neutral Summit Lounge if the straight corridor would cut through it
-    const waypoints: Array<{ x: number; y: number }> = [{ x: ax, y: ay }];
-    const ux = dx / totalDist;
-    const uy = dy / totalDist;
-    const sx = SUMMIT_X + 0.5 - ax;
-    const sy = SUMMIT_Y + 0.5 - ay;
-    const proj = sx * ux + sy * uy;
-    if (proj > 0 && proj < totalDist) {
-      const closestX = ax + ux * proj;
-      const closestY = ay + uy * proj;
-      const dSummit = Math.hypot(closestX - (SUMMIT_X + 0.5), closestY - (SUMMIT_Y + 0.5));
-      if (dSummit <= SUMMIT_RADIUS + 4.5) {
-        const px = -uy;
-        const py = ux;
-        const sideSign = (closestX - (SUMMIT_X + 0.5)) * px + (closestY - (SUMMIT_Y + 0.5)) * py >= 0 ? 1 : -1;
-        const detour = SUMMIT_RADIUS + 5.5;
-        waypoints.push({
-          x: Math.max(8, Math.min(GRID_W - 8, SUMMIT_X + 0.5 + px * sideSign * detour)),
-          y: Math.max(8, Math.min(GRID_H - 8, SUMMIT_Y + 0.5 + py * sideSign * detour)),
-        });
+    const obstacles: Array<{ x: number; y: number; r: number }> = [
+      { x: SUMMIT_X + 0.5, y: SUMMIT_Y + 0.5, r: SUMMIT_RADIUS + 4.5 },
+    ];
+
+    for (const c of this.nations) {
+      if (!c.alive || c.id === a.id || c.id === b.id) continue;
+      if (this.isTradeBlockedNation(a.id, b.id, c.id)) {
+        const estRad = Math.max(10, Math.min(30, Math.sqrt(Math.max(36, c.territoryTiles) / Math.PI) + 3.5));
+        obstacles.push({ x: c.capitalX + 0.5, y: c.capitalY + 0.5, r: estRad });
       }
     }
-    waypoints.push({ x: bx, y: by });
 
-    let globalStep = 0;
+    const waypoints: Array<{ x: number; y: number }> = [
+      { x: ax, y: ay },
+      { x: bx, y: by },
+    ];
+
+    // Insert up to 4 perpendicular detours so routes cleanly bypass Summit Lounge & sanctioning/hostile realms
+    for (let iter = 0; iter < 4 && waypoints.length < 6; iter++) {
+      let splitHappened = false;
+      for (let seg = 0; seg < waypoints.length - 1; seg++) {
+        const p0 = waypoints[seg];
+        const p1 = waypoints[seg + 1];
+        const sdx = p1.x - p0.x;
+        const sdy = p1.y - p0.y;
+        const len = Math.hypot(sdx, sdy);
+        if (len < 4) continue;
+        const ux = sdx / len;
+        const uy = sdy / len;
+
+        for (const obs of obstacles) {
+          const ox = obs.x - p0.x;
+          const oy = obs.y - p0.y;
+          const proj = ox * ux + oy * uy;
+          if (proj <= 1 || proj >= len - 1) continue;
+          const cx = p0.x + ux * proj;
+          const cy = p0.y + uy * proj;
+          const dObs = Math.hypot(cx - obs.x, cy - obs.y);
+          if (dObs < obs.r) {
+            const px = -uy;
+            const py = ux;
+            const dotSign = (cx - obs.x) * px + (cy - obs.y) * py >= 0 ? 1 : -1;
+            const detourDist = obs.r + 3.5;
+
+            const cand1x = Math.max(5, Math.min(GRID_W - 6, obs.x + px * dotSign * detourDist));
+            const cand1y = Math.max(5, Math.min(GRID_H - 6, obs.y + py * dotSign * detourDist));
+            const cand2x = Math.max(5, Math.min(GRID_W - 6, obs.x - px * dotSign * detourDist));
+            const cand2y = Math.max(5, Math.min(GRID_H - 6, obs.y - py * dotSign * detourDist));
+
+            const d1Blocked = this.isTradeBlockedNation(a.id, b.id, this.territory[(cand1y | 0) * GRID_W + (cand1x | 0)]);
+            const d2Blocked = this.isTradeBlockedNation(a.id, b.id, this.territory[(cand2y | 0) * GRID_W + (cand2x | 0)]);
+            const useSecond = d1Blocked && !d2Blocked;
+
+            waypoints.splice(seg + 1, 0, {
+              x: useSecond ? cand2x : cand1x,
+              y: useSecond ? cand2y : cand1y,
+            });
+            splitHappened = true;
+            break;
+          }
+        }
+        if (splitHappened) break;
+      }
+      if (!splitHappened) break;
+    }
+
+    return waypoints;
+  }
+
+  private smoothTerritoryBorders(): void {
+    const snap = new Int16Array(this.territory);
+    for (let y = 1; y < GRID_H - 1; y++) {
+      const row = y * GRID_W;
+      for (let x = 1; x < GRID_W - 1; x++) {
+        const idx = row + x;
+        if (Math.hypot(x - SUMMIT_X, y - SUMMIT_Y) <= SUMMIT_RADIUS + 1) continue;
+
+        const cur = snap[idx];
+        const n0 = snap[idx - GRID_W];
+        const n1 = snap[idx + GRID_W];
+        const n2 = snap[idx - 1];
+        const n3 = snap[idx + 1];
+
+        const curAlive = cur >= 0 && !!this.nations[cur]?.alive;
+        if (!curAlive) {
+          // Fill small 1-tile holes inside a living nation's territory (>= 3 orthogonal neighbors)
+          let candidate = -1;
+          if (n0 >= 0 && this.nations[n0]?.alive) {
+            const c = (n0 === n1 ? 1 : 0) + (n0 === n2 ? 1 : 0) + (n0 === n3 ? 1 : 0) + 1;
+            if (c >= 3) candidate = n0;
+          }
+          if (candidate === -1 && n1 >= 0 && this.nations[n1]?.alive) {
+            const c = (n1 === n2 ? 1 : 0) + (n1 === n3 ? 1 : 0) + 1;
+            if (c >= 3) candidate = n1;
+          }
+          if (candidate >= 0 && this.prop[idx] !== PropType.CHECKOUT_FLAG) {
+            this.territory[idx] = candidate;
+            if (cur >= 0 && this.propOwner[idx] === cur) {
+              this.propOwner[idx] = candidate;
+            }
+          }
+        } else {
+          // Never erase tiles with owned buildings, flags, or trade walkways
+          if (
+            this.biome[idx] === BiomeType.WALKWAY ||
+            (this.prop[idx] !== PropType.NONE && this.propOwner[idx] === cur)
+          ) {
+            continue;
+          }
+          const sameCount =
+            (n0 === cur ? 1 : 0) +
+            (n1 === cur ? 1 : 0) +
+            (n2 === cur ? 1 : 0) +
+            (n3 === cur ? 1 : 0);
+
+          if (sameCount === 0) {
+            // Remove isolated 1-tile speckles
+            let majority = -1;
+            if (n0 >= 0 && this.nations[n0]?.alive) {
+              const c = (n0 === n1 ? 1 : 0) + (n0 === n2 ? 1 : 0) + (n0 === n3 ? 1 : 0) + 1;
+              if (c >= 3) majority = n0;
+            }
+            this.territory[idx] = majority;
+          } else if (sameCount === 1) {
+            // Trim single-tile needles jutting into unclaimed neutral space
+            const emptyCount =
+              (n0 === -1 ? 1 : 0) +
+              (n1 === -1 ? 1 : 0) +
+              (n2 === -1 ? 1 : 0) +
+              (n3 === -1 ? 1 : 0);
+            const curNat = this.nations[cur];
+            const nearCap =
+              curNat && Math.hypot(x - curNat.capitalX, y - curNat.capitalY) <= 5.2;
+            if (emptyCount === 3 && !nearCap) {
+              this.territory[idx] = -1;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  public connectTradeRoad(a: Nation, b: Nation, launchCart = true): void {
+    const waypoints = this.buildTradeWaypoints(a, b);
+    if (waypoints.length < 2) return;
+
+    const paintRoadTile = (tx: number, ty: number) => {
+      if (tx < 2 || tx >= GRID_W - 2 || ty < 2 || ty >= GRID_H - 2) return;
+      if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 1.5) return;
+      const idx = ty * GRID_W + tx;
+      const curOwner = this.territory[idx];
+      if (this.isTradeBlockedNation(a.id, b.id, curOwner)) return;
+
+      const curProp = this.prop[idx];
+      if (curProp === PropType.CHECKOUT_FLAG) return;
+
+      // Never bulldoze major non-wall buildings on a third nation's land
+      if (
+        curProp !== PropType.NONE &&
+        curProp !== PropType.BARRICADE_WALL &&
+        curProp !== PropType.BARRICADE_GATE &&
+        !this.isDismantlableIkeaProp(curProp)
+      ) {
+        return;
+      }
+
+      if (this.biome[idx] !== BiomeType.FOOD_COURT) {
+        this.biome[idx] = BiomeType.WALKWAY;
+      }
+
+      if (curProp === PropType.BARRICADE_WALL) {
+        const pOwner = this.propOwner[idx];
+        if (!this.isTradeBlockedNation(a.id, b.id, pOwner)) {
+          this.placeNationProp(tx, ty, PropType.BARRICADE_GATE, 150, pOwner >= 0 ? pOwner : a.id, 0);
+        }
+      } else if (curProp !== PropType.NONE && this.isDismantlableIkeaProp(curProp)) {
+        this.prop[idx] = PropType.NONE;
+        this.propHp[idx] = 0;
+        this.propOwner[idx] = -1;
+      }
+    };
+
+    for (let seg = 0; seg < waypoints.length - 1; seg++) {
+      const p0 = waypoints[seg];
+      const p1 = waypoints[seg + 1];
+      let cx = Math.round(p0.x);
+      let cy = Math.round(p0.y);
+      const ex = Math.round(p1.x);
+      const ey = Math.round(p1.y);
+      const sdx = Math.abs(ex - cx);
+      const sdy = Math.abs(ey - cy);
+      const sx = cx < ex ? 1 : -1;
+      const sy = cy < ey ? 1 : -1;
+      let err = sdx - sdy;
+      const horizontalPrimary = sdx >= sdy;
+
+      let safety = 0;
+      while (safety++ < 600) {
+        paintRoadTile(cx, cy);
+        if (horizontalPrimary) paintRoadTile(cx, cy + 1);
+        else paintRoadTile(cx + 1, cy);
+
+        if (cx === ex && cy === ey) break;
+        const e2 = 2 * err;
+        // Step orthogonally so there are never diagonal gaps or sawtooth walls
+        if (e2 > -sdy) {
+          err -= sdy;
+          cx += sx;
+          paintRoadTile(cx, cy);
+        }
+        if (e2 < sdx) {
+          err += sdx;
+          cy += sy;
+        }
+      }
+    }
+
+    this.dirtyMap = true;
+    this.dirtyLight = true;
+
+    if (launchCart && !this.isNight && this.units.length < this.maxPopulation + 120) {
+      this.spawnTradeCart(a, b);
+    }
+  }
+
+  private connectUnionLandsAndCorridor(a: Nation, b: Nation, isMergedUnion: boolean): void {
+    const waypoints = this.buildTradeWaypoints(a, b);
+    if (waypoints.length < 2) return;
+
     const totalSegments = waypoints.length - 1;
+    let roadSteps = 0;
 
+    // 1. Carve a smooth rounded territory bridge between both realms (no jagged diagonal walls)
     for (let seg = 0; seg < totalSegments; seg++) {
       const p0 = waypoints[seg];
       const p1 = waypoints[seg + 1];
@@ -933,103 +1207,85 @@ export class SimEngine {
       const segLen = Math.hypot(sdx, sdy);
       if (segLen < 0.5) continue;
 
-      const dirX = sdx / segLen;
-      const dirY = sdy / segLen;
-      const perpX = -dirY;
-      const perpY = dirX;
-      const steps = Math.max(2, Math.ceil(segLen * 2));
-
+      const steps = Math.max(2, Math.ceil(segLen * 1.5));
       for (let s = 0; s <= steps; s++) {
         const tLocal = s / steps;
         const tGlobal = (seg + tLocal) / totalSegments;
-        const cx = p0.x + sdx * tLocal;
-        const cy = p0.y + sdy * tLocal;
+        const cx = Math.round(p0.x + sdx * tLocal);
+        const cy = Math.round(p0.y + sdy * tLocal);
         const segmentOwnerId = isMergedUnion || tGlobal < 0.5 ? a.id : b.id;
 
-        for (let off = -3; off <= 3; off += 0.5) {
-          const tx = Math.max(2, Math.min(GRID_W - 3, Math.round(cx + perpX * off)));
-          const ty = Math.max(2, Math.min(GRID_H - 3, Math.round(cy + perpY * off)));
-          if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 1.5) continue;
+        // Smooth circular brush of radius 4 tiles for clean organic borders
+        for (let dy = -4; dy <= 4; dy++) {
+          for (let dx = -4; dx <= 4; dx++) {
+            if (dx * dx + dy * dy > 18) continue;
+            const tx = cx + dx;
+            const ty = cy + dy;
+            if (tx < 2 || tx >= GRID_W - 2 || ty < 2 || ty >= GRID_H - 2) continue;
+            if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 1.5) continue;
 
-          const idx = ty * GRID_W + tx;
-          const curOwner = this.territory[idx];
-          const canClaim =
-            curOwner === -1 ||
-            curOwner === a.id ||
-            curOwner === b.id ||
-            (curOwner >= 0 && !this.nations[curOwner]?.alive);
+            const idx = ty * GRID_W + tx;
+            const curOwner = this.territory[idx];
+            const canClaim =
+              curOwner === -1 ||
+              curOwner === a.id ||
+              curOwner === b.id ||
+              (curOwner >= 0 && !this.nations[curOwner]?.alive);
+            if (!canClaim) continue;
 
-          if (!canClaim) continue;
+            const tileOwner =
+              curOwner === a.id || curOwner === b.id
+                ? isMergedUnion
+                  ? a.id
+                  : curOwner
+                : segmentOwnerId;
 
-          const tileOwner =
-            curOwner === a.id || curOwner === b.id
-              ? isMergedUnion
-                ? a.id
-                : curOwner
-              : segmentOwnerId;
-
-          if (curOwner !== tileOwner) {
-            if (curOwner >= 0 && this.prop[idx] === PropType.CHECKOUT_FLAG) {
-              this.prop[idx] = PropType.SPOTLIGHT;
-              this.propHp[idx] = 160;
-              this.propMaxHp[idx] = 160;
-            }
-            this.territory[idx] = tileOwner;
-          }
-
-          const absOff = Math.abs(off);
-          const curProp = this.prop[idx];
-          const nearA = Math.hypot(tx - a.capitalX, ty - a.capitalY) < 4.5;
-          const nearB = Math.hypot(tx - b.capitalX, ty - b.capitalY) < 4.5;
-
-          if (absOff <= 1.15) {
-            // Open central trade avenue: convert intersecting walls into gates & clear blocking furniture
-            if (curProp !== PropType.CHECKOUT_FLAG && this.biome[idx] !== BiomeType.FOOD_COURT) {
-              this.biome[idx] = BiomeType.WALKWAY;
-            }
-            if (
-              curProp === PropType.BARRICADE_WALL &&
-              (this.propOwner[idx] === a.id || this.propOwner[idx] === b.id || this.propOwner[idx] === -1)
-            ) {
-              this.placeNationProp(tx, ty, PropType.BARRICADE_GATE, 150, tileOwner, 0);
-            } else if (curProp !== PropType.NONE && this.isDismantlableIkeaProp(curProp)) {
-              this.prop[idx] = PropType.NONE;
-              this.propHp[idx] = 0;
-              this.propOwner[idx] = -1;
-            }
-          } else if (absOff >= 2.25 && absOff <= 2.95 && !nearA && !nearB) {
-            // Connect fortified walls along both edges of the corridor, linking to each city's walls
-            if (curProp === PropType.NONE || this.isDismantlableIkeaProp(curProp)) {
-              const isSideGate = globalStep % 18 === 0;
-              const isLight = !isSideGate && globalStep % 18 === 9;
-              if (isLight) {
-                this.placeNationProp(tx, ty, PropType.SPOTLIGHT, 150, tileOwner, 0);
-              } else {
-                this.placeNationProp(
-                  tx,
-                  ty,
-                  isSideGate ? PropType.BARRICADE_GATE : PropType.BARRICADE_WALL,
-                  150,
-                  tileOwner,
-                  1 + ((tx + ty) % 4)
-                );
+            if (curOwner !== tileOwner) {
+              if (curOwner >= 0 && this.prop[idx] === PropType.CHECKOUT_FLAG) {
+                this.prop[idx] = PropType.SPOTLIGHT;
+                this.propHp[idx] = 160;
+                this.propMaxHp[idx] = 160;
               }
+              this.territory[idx] = tileOwner;
             }
           }
         }
-        globalStep++;
+
+        // Light up the union bridge cleanly every ~14 steps along the edge without overlapping structures
+        roadSteps++;
+        if (roadSteps % 14 === 7) {
+          const lx = Math.max(2, Math.min(GRID_W - 3, cx + 2));
+          const ly = Math.max(2, Math.min(GRID_H - 3, cy + 2));
+          const lIdx = ly * GRID_W + lx;
+          if (
+            Math.hypot(lx - SUMMIT_X, ly - SUMMIT_Y) > SUMMIT_RADIUS + 2 &&
+            this.territory[lIdx] === segmentOwnerId &&
+            (this.prop[lIdx] === PropType.NONE || this.isDismantlableIkeaProp(this.prop[lIdx])) &&
+            !this.hasOwnedBuildingNear(segmentOwnerId, lx, ly, 4, false)
+          ) {
+            this.placeNationProp(lx, ly, PropType.SPOTLIGHT, 150, segmentOwnerId, 0);
+          }
+        }
       }
     }
+
+    // 2. Smooth territory edges so corridor borders look clean & natural (no stair-step spikes)
+    this.smoothTerritoryBorders();
+
+    // 3. Paint crisp 2-tile-wide trade avenue down the center & gate/open any intersecting walls
+    this.connectTradeRoad(a, b, false);
 
     this.dirtyMap = true;
     this.dirtyLight = true;
 
-    // Immediately launch trade carts along the newly connected corridor
-    if (isMergedUnion) {
-      this.spawnTradeCart(a, a, { x: b.capitalX + 0.5, y: b.capitalY + 0.5, label: b.name });
-    } else {
-      this.spawnTradeCart(a, b);
-      this.spawnTradeCart(b, a);
+    // 4. Immediately launch trade carts along the newly connected corridor
+    if (!this.isNight && this.units.length < this.maxPopulation + 120) {
+      if (isMergedUnion) {
+        this.spawnTradeCart(a, a, { x: b.capitalX + 0.5, y: b.capitalY + 0.5, label: b.name });
+      } else {
+        this.spawnTradeCart(a, b);
+        this.spawnTradeCart(b, a);
+      }
     }
   }
 
@@ -1119,6 +1375,8 @@ export class SimEngine {
     primary.meatballs += Math.round(secondary.meatballs);
     primary.scrap += Math.round(secondary.scrap);
     primary.allenWrenches += Math.round(secondary.allenWrenches);
+    primary.firearms = (primary.firearms || 0) + (secondary.firearms || 0);
+    primary.civilianGoods = (primary.civilianGoods || 0) + (secondary.civilianGoods || 0);
     primary.techTier = Math.max(primary.techTier, secondary.techTier) as 1 | 2 | 3 | 4;
     primary.happiness = Math.min(100, Math.max(primary.happiness, 74) + 8);
     primary.warExhaustion = Math.max(0, primary.warExhaustion - 20);
@@ -1129,9 +1387,14 @@ export class SimEngine {
         existingTechs.add(techId);
         if (!primary.researchedTechs) primary.researchedTechs = [];
         primary.researchedTechs.push(techId);
-        if (techId === 'allen_spears') {
+        if (
+          techId === 'allen_spears' ||
+          techId === 'pneumatic_nailguns' ||
+          techId === 'halogen_rifles' ||
+          techId === 'flatpack_automation'
+        ) {
           for (const u of this.units) {
-            if (u.alive && u.nationId === primary.id && u.kind === UnitKind.SURVIVOR) {
+            if (u.alive && u.nationId === primary.id && this.isNationCitizen(u)) {
               this.applyRoleStats(u, primary, u.role);
             }
           }
@@ -1258,6 +1521,33 @@ export class SimEngine {
         }
       }
     }
+    for (let ti = 0; ti < this.techLabIndices.length; ti++) {
+      const idx = this.techLabIndices[ti];
+      if (this.prop[idx] !== PropType.TECH_LAB || this.disabledLightMap[idx] > 0) continue;
+      const owner = this.propOwner[idx];
+      const nation = owner >= 0 ? this.getNation(owner) : undefined;
+      if (!nation || !hasTech(nation, 'fluorescent_capacitor')) continue;
+      const x = idx % GRID_W;
+      const y = (idx / GRID_W) | 0;
+      const rad = WATCHTOWER_RADIUS;
+      const rCeil = Math.ceil(rad);
+      const rSq = rad * rad;
+      const minY = Math.max(0, y - rCeil);
+      const maxY = Math.min(GRID_H - 1, y + rCeil);
+      const minX = Math.max(0, x - rCeil);
+      const maxX = Math.min(GRID_W - 1, x + rCeil);
+      for (let ly = minY; ly <= maxY; ly++) {
+        const dy = ly - y;
+        const dySq = dy * dy;
+        const lRow = ly * GRID_W;
+        for (let lx = minX; lx <= maxX; lx++) {
+          const dx = lx - x;
+          if (dx * dx + dySq <= rSq) {
+            this.lightMap[lRow + lx] = 1;
+          }
+        }
+      }
+    }
     this.dirtyLight = false;
     this.forceLightRebuild = false;
     this.lastLightRebuildMs = performance.now();
@@ -1266,6 +1556,8 @@ export class SimEngine {
   public rebuildMapCache(): void {
     const data = this.mapImageData.data;
     const mmData = this.minimapImageData.data;
+    const data32 = IS_LITTLE_ENDIAN ? new Uint32Array(data.buffer) : null;
+    const mm32 = IS_LITTLE_ENDIAN ? new Uint32Array(mmData.buffer) : null;
 
     // Precompute nation & overlord RGBs
     const nationRgb: Array<[number, number, number]> = [];
@@ -1280,6 +1572,7 @@ export class SimEngine {
 
     for (let ty = 0; ty < GRID_H; ty++) {
       const tRow = ty * GRID_W;
+      const pyStart = ty * TILE_SIZE;
       for (let tx = 0; tx < GRID_W; tx++) {
         const idx = tRow + tx;
         const b = this.biome[idx];
@@ -1306,7 +1599,7 @@ export class SimEngine {
           g = Math.min(255, Math.max(0, g + delta));
           bl = Math.min(255, Math.max(0, bl + delta));
         } else if (b === BiomeType.WAREHOUSE) {
-          const delta = (tx % 4 === 0 || ty % 4 === 0) ? -10 : 4;
+          const delta = tx % 4 === 0 || ty % 4 === 0 ? -10 : 4;
           r += delta;
           g += delta;
           bl += delta;
@@ -1322,12 +1615,15 @@ export class SimEngine {
         const owner = this.territory[idx];
         let isBorder = false;
         let bColor: [number, number, number] | null = null;
+        let topDiff = false;
+        let botDiff = false;
+        let lftDiff = false;
+        let rgtDiff = false;
 
         if (owner >= 0 && owner < nationRgb.length) {
           const ownerNation = this.nations[owner];
           const nc = nationRgb[owner];
           if (ownerNation && !ownerNation.alive) {
-            // Desaturated muted ruins tint for Defeated / Depopulated empty territory
             const gray = ((nc[0] + nc[1] + nc[2]) / 3) | 0;
             const mutedR = (nc[0] * 0.4 + gray * 0.6) | 0;
             const mutedG = (nc[1] * 0.4 + gray * 0.6) | 0;
@@ -1336,69 +1632,105 @@ export class SimEngine {
             g = (g * 0.82 + mutedG * 0.18) | 0;
             bl = (bl * 0.82 + mutedB * 0.18) | 0;
           } else {
-            // Semi-transparent colored territory blend (35%)
             r = (r * 0.65 + nc[0] * 0.35) | 0;
             g = (g * 0.65 + nc[1] * 0.35) | 0;
             bl = (bl * 0.65 + nc[2] * 0.35) | 0;
           }
 
-          const top = ty > 0 ? this.territory[idx - GRID_W] : -2;
-          const bot = ty < GRID_H - 1 ? this.territory[idx + GRID_W] : -2;
-          const lft = tx > 0 ? this.territory[idx - 1] : -2;
-          const rgt = tx < GRID_W - 1 ? this.territory[idx + 1] : -2;
-          if (top !== owner || bot !== owner || lft !== owner || rgt !== owner) {
+          topDiff = ty === 0 || this.territory[idx - GRID_W] !== owner;
+          botDiff = ty === GRID_H - 1 || this.territory[idx + GRID_W] !== owner;
+          lftDiff = tx === 0 || this.territory[idx - 1] !== owner;
+          rgtDiff = tx === GRID_W - 1 || this.territory[idx + 1] !== owner;
+          if (topDiff || botDiff || lftDiff || rgtDiff) {
             isBorder = true;
-            if (ownerNation && !ownerNation.alive) {
-              bColor = [100, 116, 139];
-            } else {
-              bColor = borderRgb[owner];
-            }
+            bColor = ownerNation && !ownerNation.alive ? [100, 116, 139] : borderRgb[owner];
           }
         }
 
-        // Write minimap pixel
-        const mmIdx = idx * 4;
-        if (isBorder && bColor) {
-          mmData[mmIdx] = bColor[0];
-          mmData[mmIdx + 1] = bColor[1];
-          mmData[mmIdx + 2] = bColor[2];
-        } else {
-          mmData[mmIdx] = r;
-          mmData[mmIdx + 1] = g;
-          mmData[mmIdx + 2] = bl;
-        }
-        mmData[mmIdx + 3] = 255;
-
-        // Write TILE_SIZE x TILE_SIZE block to offscreen map ImageData
-        const topDiff = isBorder && (ty > 0 ? this.territory[idx - GRID_W] !== owner : true);
-        const botDiff = isBorder && (ty < GRID_H - 1 ? this.territory[idx + GRID_W] !== owner : true);
-        const lftDiff = isBorder && (tx > 0 ? this.territory[idx - 1] !== owner : true);
-        const rgtDiff = isBorder && (tx < GRID_W - 1 ? this.territory[idx + 1] !== owner : true);
-
-        const pyStart = ty * TILE_SIZE;
         const pxStart = tx * TILE_SIZE;
-        for (let py = 0; py < TILE_SIZE; py++) {
-          const rowOff = (pyStart + py) * WORLD_PX_W;
-          for (let px = 0; px < TILE_SIZE; px++) {
-            const pIdx = (rowOff + pxStart + px) * 4;
-            if (
-              isBorder &&
-              bColor &&
-              ((topDiff && py < 2) ||
-                (botDiff && py >= TILE_SIZE - 2) ||
-                (lftDiff && px < 2) ||
-                (rgtDiff && px >= TILE_SIZE - 2))
-            ) {
-              // Crisp dark outer border (Vassals match Overlord outline)
-              data[pIdx] = (bColor[0] * 0.72) | 0;
-              data[pIdx + 1] = (bColor[1] * 0.72) | 0;
-              data[pIdx + 2] = (bColor[2] * 0.72) | 0;
-            } else {
-              data[pIdx] = r;
-              data[pIdx + 1] = g;
-              data[pIdx + 2] = bl;
+        if (data32 && mm32) {
+          const basePacked = (0xff << 24) | (bl << 16) | (g << 8) | r;
+          if (!isBorder || !bColor) {
+            mm32[idx] = basePacked;
+            for (let py = 0; py < TILE_SIZE; py++) {
+              const pBase = (pyStart + py) * WORLD_PX_W + pxStart;
+              data32[pBase] = basePacked;
+              data32[pBase + 1] = basePacked;
+              data32[pBase + 2] = basePacked;
+              data32[pBase + 3] = basePacked;
+              data32[pBase + 4] = basePacked;
+              data32[pBase + 5] = basePacked;
+              data32[pBase + 6] = basePacked;
+              data32[pBase + 7] = basePacked;
             }
-            data[pIdx + 3] = 255;
+          } else {
+            const mmPacked = (0xff << 24) | (bColor[2] << 16) | (bColor[1] << 8) | bColor[0];
+            mm32[idx] = mmPacked;
+            const br = (bColor[0] * 0.72) | 0;
+            const bg = (bColor[1] * 0.72) | 0;
+            const bb = (bColor[2] * 0.72) | 0;
+            const borderPacked = (0xff << 24) | (bb << 16) | (bg << 8) | br;
+            for (let py = 0; py < TILE_SIZE; py++) {
+              const pBase = (pyStart + py) * WORLD_PX_W + pxStart;
+              const yEdge = (topDiff && py < 2) || (botDiff && py >= TILE_SIZE - 2);
+              if (yEdge) {
+                data32[pBase] = borderPacked;
+                data32[pBase + 1] = borderPacked;
+                data32[pBase + 2] = borderPacked;
+                data32[pBase + 3] = borderPacked;
+                data32[pBase + 4] = borderPacked;
+                data32[pBase + 5] = borderPacked;
+                data32[pBase + 6] = borderPacked;
+                data32[pBase + 7] = borderPacked;
+              } else {
+                const lCol = lftDiff ? borderPacked : basePacked;
+                const rCol = rgtDiff ? borderPacked : basePacked;
+                data32[pBase] = lCol;
+                data32[pBase + 1] = lCol;
+                data32[pBase + 2] = basePacked;
+                data32[pBase + 3] = basePacked;
+                data32[pBase + 4] = basePacked;
+                data32[pBase + 5] = basePacked;
+                data32[pBase + 6] = rCol;
+                data32[pBase + 7] = rCol;
+              }
+            }
+          }
+        } else {
+          const mmIdx = idx * 4;
+          if (isBorder && bColor) {
+            mmData[mmIdx] = bColor[0];
+            mmData[mmIdx + 1] = bColor[1];
+            mmData[mmIdx + 2] = bColor[2];
+          } else {
+            mmData[mmIdx] = r;
+            mmData[mmIdx + 1] = g;
+            mmData[mmIdx + 2] = bl;
+          }
+          mmData[mmIdx + 3] = 255;
+
+          for (let py = 0; py < TILE_SIZE; py++) {
+            const rowOff = (pyStart + py) * WORLD_PX_W;
+            for (let px = 0; px < TILE_SIZE; px++) {
+              const pIdx = (rowOff + pxStart + px) * 4;
+              if (
+                isBorder &&
+                bColor &&
+                ((topDiff && py < 2) ||
+                  (botDiff && py >= TILE_SIZE - 2) ||
+                  (lftDiff && px < 2) ||
+                  (rgtDiff && px >= TILE_SIZE - 2))
+              ) {
+                data[pIdx] = (bColor[0] * 0.72) | 0;
+                data[pIdx + 1] = (bColor[1] * 0.72) | 0;
+                data[pIdx + 2] = (bColor[2] * 0.72) | 0;
+              } else {
+                data[pIdx] = r;
+                data[pIdx + 1] = g;
+                data[pIdx + 2] = bl;
+              }
+              data[pIdx + 3] = 255;
+            }
           }
         }
       }
@@ -1469,7 +1801,27 @@ export class SimEngine {
     // 2. Rebuild spatial hash
     this.spatialHash.rebuild(this.units);
 
-    // 3. Periodic timers
+    // 3. Periodic timers, Store Anomalies & Ambient Caravans/Mercenaries
+    if (this.activeAnomaly) {
+      this.activeAnomaly.remainingSec -= dt;
+      if (this.activeAnomaly.remainingSec <= 0) {
+        this.addNews('DIPLOMACY', `Store Anomaly ended: ${this.activeAnomaly.label} subsided.`);
+        this.activeAnomaly = null;
+      }
+    } else if (this.day >= 2) {
+      this.anomalyCooldownTimer -= dt;
+      if (this.anomalyCooldownTimer <= 0) {
+        this.anomalyCooldownTimer = 95 + Math.random() * 45;
+        this.triggerStoreAnomaly();
+      }
+    }
+
+    this.caravanMercTimer -= dt;
+    if (this.caravanMercTimer <= 0) {
+      this.caravanMercTimer = 34 + Math.random() * 14;
+      this.tickAmbientCaravansAndMercs();
+    }
+
     this.economyTimer += dt;
     if (this.economyTimer >= 1.0) {
       this.economyTimer -= 1.0;
@@ -1495,14 +1847,16 @@ export class SimEngine {
       runHeuristicDiplomacyTurn(this.nations, this.day, (act) => this.applyDiplomaticAction(act));
     }
 
+    const recountInterval = this.units.length > 900 ? 1.8 : 1.2;
     this.territoryRebuildTimer += dt;
-    if (this.territoryRebuildTimer >= 1.2) {
-      this.territoryRebuildTimer -= 1.2;
+    if (this.territoryRebuildTimer >= recountInterval) {
+      this.territoryRebuildTimer = 0;
       this.recountTerritoryAndHousing();
       if (this.dirtyLight) this.recomputeLightMap();
     }
 
-    // 4. Fair Night Staff Spawning (NEVER inside lit spotlight radiuses)
+    // 4. Fair Night Staff Spawning (NEVER inside lit spotlight radiuses) & Adaptive Pack Coordination
+    this.evaluateStaffDominanceAndPacks(dt);
     if (this.isNight) {
       this.staffSpawnTimer += dt;
       const spawnInterval = Math.max(0.55, 2.2 - this.day * 0.14);
@@ -1559,7 +1913,7 @@ export class SimEngine {
     }
 
     // 8. Compact dead units deterministically to keep iteration fast
-    if (this.deadUnitsCount >= 60 || (this.units.length > 500 && this.deadUnitsCount >= 25)) {
+    if (this.deadUnitsCount >= 40 || (this.units.length > 500 && this.deadUnitsCount >= 20)) {
       this.units = this.units.filter((u) => u.alive);
       this.deadUnitsCount = 0;
     }
@@ -1820,7 +2174,7 @@ export class SimEngine {
       let bestDSq = 9.5 * 9.5;
       this.spatialHash.queryRadius(this.units, x + 0.5, y + 0.5, 9.5, (u, _ui, dSq) => {
         const isHostile =
-          (this.isNight && u.kind >= UnitKind.STAFF_NORMAL && u.kind <= UnitKind.STAFF_MANAGER) ||
+          (this.isNight && isStaffKind(u.kind)) ||
           (u.nationId >= 0 && this.areHostile(nation.id, u.nationId));
         if (isHostile && dSq < bestDSq) {
           bestDSq = dSq;
@@ -1843,8 +2197,282 @@ export class SimEngine {
           nationId: nation.id,
           life: 0.65,
         });
+        if (this.isNearCamera(x + 0.5, y + 0.5)) {
+          soundFX.playShot('turret');
+        }
       }
     }
+
+    // Anomalous Arc Capacitor defense & field-mend pulse from SCP-IKEA Tech Labs
+    for (let ti = 0; ti < this.techLabIndices.length; ti++) {
+      const idx = this.techLabIndices[ti];
+      if (this.prop[idx] !== PropType.TECH_LAB) continue;
+      const ownerId = this.propOwner[idx];
+      const nation = ownerId >= 0 ? this.getNation(ownerId) : undefined;
+      if (!nation || !nation.alive || !hasTech(nation, 'fluorescent_capacitor')) continue;
+      const x = idx % GRID_W;
+      const y = (idx / GRID_W) | 0;
+      let zapped: Unit | null = null;
+      let bestDSq = 8.5 * 8.5;
+      this.spatialHash.queryRadius(this.units, x + 0.5, y + 0.5, 8.5, (u, _ui, dSq) => {
+        if (u.kind === UnitKind.SURVIVOR && u.nationId === nation.id && u.hp < u.maxHp) {
+          u.hp = Math.min(u.maxHp, u.hp + 3.5);
+          return;
+        }
+        const isHostile =
+          (this.isNight && isStaffKind(u.kind)) ||
+          (u.nationId >= 0 && this.areHostile(nation.id, u.nationId));
+        if (isHostile && dSq < bestDSq) {
+          bestDSq = dSq;
+          zapped = u;
+        }
+      });
+      if (zapped) {
+        const target = zapped as Unit;
+        this.damageUnit(target, 20, undefined, nation.id);
+        this.spawnParticleBurst(target.x, target.y, '#22d3ee', 4);
+        if (this.isNearCamera(x + 0.5, y + 0.5)) {
+          soundFX.playShot('halogen_rifle');
+        }
+      }
+    }
+  }
+
+  private isNearCamera(wx: number, wy: number): boolean {
+    const camTx = this.camera.x / TILE_SIZE;
+    const camTy = this.camera.y / TILE_SIZE;
+    return (
+      Math.abs(wx - camTx) <= this.viewTilesHalfW &&
+      Math.abs(wy - camTy) <= this.viewTilesHalfH
+    );
+  }
+
+  private evaluateStaffDominanceAndPacks(dt: number): void {
+    this.recentStaffSlainWindow = Math.max(0, this.recentStaffSlainWindow - dt * 0.28);
+
+    this.staffDominanceCheckTimer -= dt;
+    if (this.staffDominanceCheckTimer <= 0) {
+      this.staffDominanceCheckTimer = 4.5;
+      let humanPop = 0;
+      let humanArmy = 0;
+      let totalFirearms = 0;
+      let tier3Plus = 0;
+      for (const n of this.nations) {
+        if (!n.alive || n.species === 'staff') continue;
+        humanPop += n.population;
+        humanArmy += n.armyCount ?? 0;
+        totalFirearms += n.firearms ?? 0;
+        if (n.techTier >= 3) tier3Plus++;
+      }
+
+      let nextTier: 0 | 1 | 2 = this.staffAlertTier;
+      if (
+        this.recentStaffSlainWindow >= 20 ||
+        (humanArmy >= 32 && (totalFirearms >= 18 || tier3Plus >= 2)) ||
+        humanPop >= 145
+      ) {
+        nextTier = 2;
+      } else if (
+        this.recentStaffSlainWindow >= 9 ||
+        (humanArmy >= 16 && (totalFirearms >= 6 || tier3Plus >= 1)) ||
+        humanPop >= 80
+      ) {
+        nextTier = Math.max(nextTier, 1) as 0 | 1 | 2;
+      } else if (humanPop < 42 && this.recentStaffSlainWindow < 4) {
+        nextTier = 0;
+      }
+
+      if (nextTier > this.staffAlertTier) {
+        this.staffAlertTier = nextTier;
+        if (nextTier === 1) {
+          this.addNews(
+            'STAFF',
+            'SCP-3008-2 Staff realize survivors are dominating—employees are grouping into coordinated attack packs!'
+          );
+          this.addChronicle(
+            'GROWTH',
+            'Staff Hive Adaptation',
+            'Overpowered by well-armed kingdoms, Store Staff began staging coordinated night packs.',
+            '#f59e0b'
+          );
+        } else {
+          this.addNews(
+            'STAFF',
+            'STORE DOMINANCE ALERT: Lone Staff keep getting wiped—armored siege platoons are organizing!'
+          );
+          this.addChronicle(
+            'WAR',
+            'Staff Siege Coordination',
+            'Dominant human firepower forced SCP-3008-2 entities into heavy combined-arms siege packs.',
+            '#ef4444'
+          );
+        }
+        soundFX.playStaffCoordinated();
+      } else {
+        this.staffAlertTier = nextTier;
+      }
+    }
+
+    if (!this.isNight) {
+      this.staffPack = null;
+      return;
+    }
+
+    if (this.staffPack) {
+      const target = this.getNation(this.staffPack.targetNationId);
+      if (!target || !target.alive) {
+        this.staffPack = null;
+        this.staffPackCooldown = 8;
+        return;
+      }
+      this.staffPack.targetX = target.capitalX;
+      this.staffPack.targetY = target.capitalY;
+      this.staffPack.timer -= dt;
+
+      if (this.staffPack.phase === 'GATHERING') {
+        let gathered = 0;
+        this.spatialHash.queryRadius(
+          this.units,
+          this.staffPack.rallyX,
+          this.staffPack.rallyY,
+          8.5,
+          (u) => {
+            if (isStaffKind(u.kind) && u.nationId < 0 && !u.pacified) gathered++;
+          }
+        );
+        this.staffPack.membersCount = gathered;
+        if (this.staffPack.timer <= 0 || gathered >= (this.staffAlertTier === 2 ? 8 : 6)) {
+          this.staffPack.phase = 'CHARGING';
+          this.staffPack.timer = 17;
+          this.spatialHash.queryRadius(
+            this.units,
+            this.staffPack.rallyX,
+            this.staffPack.rallyY,
+            10,
+            (u) => {
+              if (isStaffKind(u.kind) && u.nationId < 0 && !u.pacified) {
+                u.feverTimer = Math.max(u.feverTimer, 6.5);
+                u.chatEmoji = '📣';
+                u.chatTimer = 2.0;
+              }
+            }
+          );
+          this.spawnParticleBurst(this.staffPack.rallyX, this.staffPack.rallyY, '#ef4444', 12);
+          this.spawnFloatingText(
+            this.staffPack.rallyX,
+            this.staffPack.rallyY - 1.5,
+            `PACK ASSAULT ON ${target.name.split(' ')[0].toUpperCase()}!`,
+            '#f87171'
+          );
+          soundFX.playStaffCoordinated();
+        }
+      } else if (this.staffPack.timer <= 0) {
+        this.staffPack = null;
+        this.staffPackCooldown = this.staffAlertTier === 2 ? 12 : 19;
+      }
+    } else if (this.staffAlertTier >= 1) {
+      this.staffPackCooldown -= dt;
+      if (this.staffPackCooldown <= 0) {
+        this.launchCoordinatedStaffPack();
+      }
+    }
+  }
+
+  private launchCoordinatedStaffPack(): void {
+    const candidates = this.nations
+      .filter((n) => n.alive && n.species !== 'staff')
+      .sort(
+        (a, b) =>
+          b.population + (b.armyCount ?? 0) * 3 + (b.firearms ?? 0) * 1.5 + b.techTier * 12 -
+          (a.population + (a.armyCount ?? 0) * 3 + (a.firearms ?? 0) * 1.5 + a.techTier * 12)
+      );
+    const target = candidates[0] || this.nations.find((n) => n.alive);
+    if (!target) {
+      this.staffPackCooldown = 14;
+      return;
+    }
+
+    let rallyX = -1;
+    let rallyY = -1;
+    for (let attempt = 0; attempt < 22; attempt++) {
+      const angle = Math.random() * Math.PI * 2;
+      const dist = 17 + Math.random() * 10;
+      const tx = Math.max(4, Math.min(GRID_W - 5, Math.round(target.capitalX + Math.cos(angle) * dist)));
+      const ty = Math.max(4, Math.min(GRID_H - 5, Math.round(target.capitalY + Math.sin(angle) * dist)));
+      const idx = ty * GRID_W + tx;
+      if (this.lightMap[idx] === 0 && this.prop[idx] === PropType.NONE) {
+        rallyX = tx + 0.5;
+        rallyY = ty + 0.5;
+        break;
+      }
+    }
+    if (rallyX < 0) {
+      this.staffPackCooldown = 10;
+      return;
+    }
+
+    const wildStaffCount = this.units.filter((u) => u.alive && isStaffKind(u.kind) && u.nationId < 0).length;
+    const hardCap = Math.min(220 + this.day * 28, Math.floor(this.maxPopulation * 0.28));
+    const room = Math.max(0, hardCap - wildStaffCount);
+    const desiredRoster: Array<
+      | UnitKind.STAFF_MANAGER
+      | UnitKind.STAFF_ANNOUNCER
+      | UnitKind.STAFF_WARDEN
+      | UnitKind.STAFF_STALKER
+      | UnitKind.STAFF_CRAWLER
+      | UnitKind.STAFF_NORMAL
+    > =
+      this.staffAlertTier === 2
+        ? [
+            UnitKind.STAFF_MANAGER,
+            UnitKind.STAFF_ANNOUNCER,
+            UnitKind.STAFF_WARDEN,
+            UnitKind.STAFF_WARDEN,
+            UnitKind.STAFF_STALKER,
+            UnitKind.STAFF_STALKER,
+            UnitKind.STAFF_CRAWLER,
+            UnitKind.STAFF_CRAWLER,
+            UnitKind.STAFF_NORMAL,
+          ]
+        : [
+            UnitKind.STAFF_ANNOUNCER,
+            UnitKind.STAFF_WARDEN,
+            UnitKind.STAFF_STALKER,
+            UnitKind.STAFF_CRAWLER,
+            UnitKind.STAFF_CRAWLER,
+            UnitKind.STAFF_NORMAL,
+          ];
+
+    const spawnCount = Math.min(desiredRoster.length, Math.max(3, room));
+    for (let i = 0; i < spawnCount; i++) {
+      const ox = rallyX + (Math.random() - 0.5) * 3.5;
+      const oy = rallyY + (Math.random() - 0.5) * 3.5;
+      const spawned = this.spawnStaff(desiredRoster[i], ox, oy);
+      if (this.staffAlertTier === 2) {
+        spawned.maxHp = Math.round(spawned.maxHp * 1.25);
+        spawned.hp = spawned.maxHp;
+      }
+      spawned.chatEmoji = '⚠️';
+      spawned.chatTimer = 2.6;
+      spawned.targetX = rallyX;
+      spawned.targetY = rallyY;
+      spawned.hasTarget = true;
+    }
+
+    this.staffPack = {
+      targetNationId: target.id,
+      targetX: target.capitalX,
+      targetY: target.capitalY,
+      rallyX,
+      rallyY,
+      phase: 'GATHERING',
+      timer: 6.0,
+      membersCount: spawnCount,
+    };
+    this.staffPackCooldown = this.staffAlertTier === 2 ? 22 : 28;
+    this.spawnFloatingText(rallyX, rallyY - 1.3, 'STAFF PACK RALLYING!', '#fbbf24');
+    this.addNews('STAFF', `Coordinated Staff pack spotted rallying outside ${target.name}!`);
+    soundFX.playStaffCoordinated();
   }
 
   private tickFires(): void {
@@ -1967,6 +2595,7 @@ export class SimEngine {
         const stance = this.getStance(a.id, b.id);
         if (stance === 'NEUTRAL' || stance === 'TRUCE') {
           this.setRelation(a.id, b.id, 'TRADE_PACT');
+          this.connectTradeRoad(a, b);
           a.lastQuote = `We agreed on open cart lanes with ${b.name} at the Summit!`;
           b.lastQuote = `Fair meatball trade sealed with ${a.name}!`;
           this.addNews(
@@ -1976,6 +2605,7 @@ export class SimEngine {
           forgedDeal = true;
         } else if (stance === 'TRADE_PACT' && a.meatballs >= 45 && b.meatballs >= 45) {
           this.setRelation(a.id, b.id, 'ALLIANCE');
+          this.connectTradeRoad(a, b);
           a.lastQuote = `${b.name} and ${a.name} stand united in the Showroom!`;
           b.lastQuote = `An Alliance forged over Swedish meatballs!`;
           this.addNews(
@@ -1985,6 +2615,8 @@ export class SimEngine {
           forgedDeal = true;
         } else if (stance === 'ALLIANCE' && a.happiness >= 55 && b.happiness >= 55) {
           this.setRelation(a.id, b.id, 'UNION');
+          this.connectUnionLandsAndCorridor(a, b, false);
+          this.recountTerritoryAndHousing();
           a.lastQuote = `One Union Pact to guard every aisle with ${b.name}!`;
           b.lastQuote = `${a.name} & ${b.name} pledge mutual defense as a Union!`;
           this.addNews(
@@ -2058,7 +2690,7 @@ export class SimEngine {
       (u) =>
         u.alive &&
         u.nationId === nationId &&
-        u.kind === UnitKind.SURVIVOR &&
+        this.isNationCitizen(u) &&
         u.role === SurvivorRole.LEADER
     );
     if (!leaderUnit) return 'away';
@@ -2068,6 +2700,37 @@ export class SimEngine {
       return 'walking';
     }
     return 'away';
+  }
+
+  private isNationCitizen(u: Unit): boolean {
+    return u.nationId >= 0 && (u.kind === UnitKind.SURVIVOR || isStaffKind(u.kind));
+  }
+
+  private getWeaponRank(w: WeaponType | undefined): number {
+    if (w === 'plasma_stapler' || w === 'halogen_rifle' || w === 'pa_megaphone') return 3;
+    if (w === 'nailgun') return 2;
+    if (w === 'allen_spear') return 1;
+    return 0;
+  }
+
+  private getNationBestWeapon(n: Nation | undefined, unitId = 0): { weapon: WeaponType; tier: 0 | 1 | 2 | 3 } {
+    if (!n) return { weapon: 'none', tier: 0 };
+    if (hasTech(n, 'halogen_rifles')) {
+      const weapon: WeaponType =
+        n.species === 'staff' ? 'pa_megaphone' : unitId % 3 === 0 ? 'plasma_stapler' : 'halogen_rifle';
+      return { weapon, tier: 3 };
+    }
+    if (hasTech(n, 'pneumatic_nailguns')) {
+      return { weapon: 'nailgun', tier: 2 };
+    }
+    if (hasTech(n, 'allen_spears')) {
+      return { weapon: 'allen_spear', tier: 1 };
+    }
+    return { weapon: 'none', tier: 0 };
+  }
+
+  public setAllowWildStaffKingdoms(enabled: boolean): void {
+    this.allowWildStaffKingdoms = enabled;
   }
 
   private getEffectiveGuardRatio(n: Nation): number {
@@ -2151,14 +2814,39 @@ export class SimEngine {
     const isLeader = role === SurvivorRole.LEADER;
     const isGeneral = role === SurvivorRole.GENERAL;
     const isGuard = role === SurvivorRole.GUARD;
+    const isTinker = role === SurvivorRole.TINKER;
     const tierHpBonus = n ? (n.techTier - 1) * 14 : 0;
     const govHpBonus = n?.government === 'Iron Dictatorship' && (isGuard || isGeneral) ? 15 : 0;
-    const techHpBonus = hasTech(n, 'allen_spears') && (isGuard || isGeneral || isLeader) ? 18 : 0;
-    const techAtkBonus = hasTech(n, 'allen_spears') && (isGuard || isGeneral || isLeader) ? 3 : 0;
-    const baseHp = (isLeader ? 140 : isGeneral ? 135 : isGuard ? 95 : 70) + tierHpBonus + govHpBonus + techHpBonus;
+    const staffCitizenBonus = isStaffKind(u.kind) ? 20 : 0;
+    const techHpBonus =
+      (hasTech(n, 'allen_spears') && (isGuard || isGeneral || isLeader) ? 18 : 0) +
+      (hasTech(n, 'flatpack_automation') && (isGuard || isGeneral || isLeader) ? 20 : 0) +
+      (hasTech(n, 'swedish_schematics') && isTinker ? 15 : 0);
+    const techAtkBonus =
+      (hasTech(n, 'allen_spears') && (isGuard || isGeneral || isLeader) ? 3 : 0) +
+      (hasTech(n, 'flatpack_automation') && (isGuard || isGeneral || isLeader) ? 2 : 0) +
+      (hasTech(n, 'pneumatic_nailguns') && (isGuard || isGeneral || isLeader) ? 3 : 0) +
+      (hasTech(n, 'halogen_rifles') && (isGuard || isGeneral || isLeader) ? 5 : 0);
+    const baseHp =
+      (isLeader ? 140 : isGeneral ? 135 : isGuard ? 95 : 70) +
+      tierHpBonus +
+      govHpBonus +
+      techHpBonus +
+      staffCitizenBonus;
     u.maxHp = u.traits.includes('Tough') ? Math.round(baseHp * 1.35) : baseHp;
     u.hp = Math.min(u.hp, u.maxHp);
-    u.atk = (isLeader ? 14 : isGeneral ? 13 : isGuard ? 11 : 6) + (n ? (n.techTier - 1) * 2 : 0) + techAtkBonus;
+    u.atk =
+      (isLeader ? 14 : isGeneral ? 13 : isGuard ? 11 : 6) +
+      (n ? (n.techTier - 1) * 2 : 0) +
+      techAtkBonus +
+      (isStaffKind(u.kind) ? 3 : 0);
+
+    if (n && (isGuard || isGeneral || isLeader || isTinker)) {
+      const best = this.getNationBestWeapon(n, u.id);
+      if (best.tier > this.getWeaponRank(u.weapon)) {
+        u.weapon = best.weapon;
+      }
+    }
   }
 
   public setNationActiveResearch(nationId: number, techId: TechId): void {
@@ -2168,6 +2856,34 @@ export class SimEngine {
     if (!node || !canResearchTech(n, node)) return;
     n.activeResearchId = techId;
     n.researchPoints = 0;
+  }
+
+  public boostNationResearch(nationId: number, amount = 20): boolean {
+    const n = this.getNation(nationId);
+    if (!n || !n.alive) return false;
+    if (!n.researchedTechs) n.researchedTechs = [];
+    if (!n.activeResearchId || n.researchedTechs.includes(n.activeResearchId)) {
+      n.activeResearchId = this.pickBestResearchForNation(n);
+      n.researchPoints = 0;
+    }
+    if (!n.activeResearchId) {
+      n.allenWrenches += 15;
+      this.spawnFloatingText(n.capitalX + 0.5, n.capitalY - 1.4, '+15 WRENCHES!', '#38bdf8');
+      return true;
+    }
+    n.researchPoints = (n.researchPoints || 0) + amount;
+    const activeNode = RESEARCH_BY_ID[n.activeResearchId];
+    if (activeNode && n.researchPoints >= activeNode.cost) {
+      const completedId = activeNode.id;
+      n.researchedTechs.push(completedId);
+      n.researchPoints = Math.max(0, n.researchPoints - activeNode.cost);
+      n.activeResearchId = this.pickBestResearchForNation(n);
+      this.applyTechUnlockEffects(n, completedId, true);
+    } else {
+      this.spawnFloatingText(n.capitalX + 0.5, n.capitalY - 1.4, `+${amount} RP!`, '#38bdf8');
+      this.spawnParticleBurst(n.capitalX + 0.5, n.capitalY + 0.5, '#38bdf8', 7);
+    }
+    return true;
   }
 
   public grantNationResearch(nationId: number, techId: TechId): void {
@@ -2193,13 +2909,43 @@ export class SimEngine {
 
   private applyTechUnlockEffects(n: Nation, techId: TechId, byGod = false): void {
     const node = RESEARCH_BY_ID[techId];
-    if (techId === 'halogen_floodlights') {
+    if (techId === 'halogen_floodlights' || techId === 'fluorescent_capacitor') {
       this.dirtyLight = true;
     }
-    if (techId === 'allen_spears') {
+    if (
+      techId === 'allen_spears' ||
+      techId === 'flatpack_automation' ||
+      techId === 'swedish_schematics' ||
+      techId === 'pneumatic_nailguns' ||
+      techId === 'halogen_rifles'
+    ) {
       for (const u of this.units) {
-        if (u.alive && u.nationId === n.id && u.kind === UnitKind.SURVIVOR) {
+        if (u.alive && u.nationId === n.id && this.isNationCitizen(u)) {
           this.applyRoleStats(u, n, u.role);
+        }
+      }
+      if (techId === 'pneumatic_nailguns' || techId === 'halogen_rifles') {
+        n.firearms = (n.firearms || 0) + (techId === 'halogen_rifles' ? 12 : 8);
+      }
+    }
+    if (techId === 'civilian_catalog') {
+      n.civilianGoods = (n.civilianGoods || 0) + 18;
+      n.happiness = Math.min(100, n.happiness + 6);
+    }
+    if (techId === 'flatpack_automation') {
+      // Reinforce all owned barricades, gates, watchtowers, and tech labs
+      for (let i = 0; i < this.prop.length; i++) {
+        if (this.propOwner[i] !== n.id) continue;
+        const p = this.prop[i];
+        if (
+          p === PropType.BARRICADE_WALL ||
+          p === PropType.BARRICADE_GATE ||
+          p === PropType.WATCHTOWER ||
+          p === PropType.TECH_LAB
+        ) {
+          const newMax = Math.round(Math.max(150, this.propMaxHp[i]) * 1.45);
+          this.propMaxHp[i] = newMax;
+          this.propHp[i] = Math.min(newMax, Math.round(this.propHp[i] * 1.45));
         }
       }
     }
@@ -2232,9 +2978,10 @@ export class SimEngine {
         let s = -node.tier * 2;
         if (atWar && node.branch === 'military') s += 10;
         if (lowFood && node.branch === 'economy') s += 9;
+        if (node.branch === 'scp_tech' && (n.techTier >= 2 || (n.jobs?.tinkers || 0) > 0)) s += 5;
         if ((n.government === 'Iron Dictatorship' || n.ideology === 'Iron Fortress') && node.branch === 'military') s += 4;
         if ((n.government === 'Merchant Republic' || n.ideology === 'Merchant Cartel') && node.branch === 'economy') s += 4;
-        if ((n.government === 'Meatball Theocracy' || n.government === 'Checkout Democracy') && node.branch === 'lighting') s += 4;
+        if ((n.government === 'Meatball Theocracy' || n.government === 'Checkout Democracy') && (node.branch === 'lighting' || node.branch === 'scp_tech')) s += 4;
         return s;
       };
       return score(b) - score(a);
@@ -2277,13 +3024,52 @@ export class SimEngine {
     return 'Showroom Plaza';
   }
 
-  private getBuildingCost(prop: PropType): {
+  public getKingdomBuildingSpacing(n: Nation): BuildingSpacing {
+    if (n.buildingSpacing) {
+      return n.buildingSpacing;
+    }
+    const pattern = this.getKingdomBuildingPattern(n);
+    if (
+      pattern === 'Iron Citadel' ||
+      n.government === 'Iron Dictatorship' ||
+      n.ideology === 'Iron Fortress'
+    ) {
+      return 'Crowded';
+    }
+    if (
+      pattern === 'Showroom Plaza' ||
+      pattern === 'Imperial Concourse' ||
+      n.ideology === 'Expansionist Empire'
+    ) {
+      return 'Spaced';
+    }
+    return 'Balanced';
+  }
+
+  public setNationBuildingSpacing(nationId: number, spacing: BuildingSpacing): boolean {
+    const n = this.getNation(nationId);
+    if (!n || !n.alive) return false;
+    if (n.buildingSpacing === spacing) return true;
+    n.buildingSpacing = spacing;
+    this.addNews('POLITICS', `${n.name} adopted ${spacing} city building spacing.`);
+    this.spawnFloatingText(n.capitalX + 0.5, n.capitalY - 2, `${spacing.toUpperCase()} ZONING!`, '#ffda1a');
+    return true;
+  }
+
+  private getBuildingCost(prop: PropType, n?: Nation): {
     scrap: number;
     wrenches: number;
     meatballs: number;
     hp: number;
     label: string;
   } {
+    const reinforced =
+      hasTech(n, 'flatpack_automation') &&
+      (prop === PropType.BARRICADE_WALL ||
+        prop === PropType.BARRICADE_GATE ||
+        prop === PropType.WATCHTOWER ||
+        prop === PropType.TECH_LAB);
+    const hpMult = reinforced ? 1.45 : 1;
     switch (prop) {
       case PropType.MATTRESS_HUT:
         return { scrap: 8, wrenches: 0, meatballs: 0, hp: 140, label: '+Mattress Hut' };
@@ -2295,14 +3081,18 @@ export class SimEngine {
         return { scrap: 10, wrenches: 4, meatballs: 0, hp: 155, label: '+Cart Depot' };
       case PropType.ARCHIVE:
         return { scrap: 12, wrenches: 6, meatballs: 0, hp: 175, label: '+Billy Archive' };
+      case PropType.TECH_LAB:
+        return { scrap: 12, wrenches: 7, meatballs: 0, hp: Math.round(185 * hpMult), label: '+Tech Lab' };
+      case PropType.ESCALATOR:
+        return { scrap: 14, wrenches: 8, meatballs: 0, hp: Math.round(200 * hpMult), label: '+Escalator Hub' };
       case PropType.SPOTLIGHT:
         return { scrap: 8, wrenches: 0, meatballs: 0, hp: 150, label: '+Spotlight' };
       case PropType.WATCHTOWER:
-        return { scrap: 11, wrenches: 3, meatballs: 0, hp: 190, label: '+Watchtower' };
+        return { scrap: 11, wrenches: 3, meatballs: 0, hp: Math.round(190 * hpMult), label: '+Watchtower' };
       case PropType.BARRICADE_GATE:
-        return { scrap: 5, wrenches: 0, meatballs: 0, hp: 145, label: '' };
+        return { scrap: 5, wrenches: 0, meatballs: 0, hp: Math.round(145 * hpMult), label: '' };
       default:
-        return { scrap: 5, wrenches: 0, meatballs: 0, hp: 150, label: '' };
+        return { scrap: 5, wrenches: 0, meatballs: 0, hp: Math.round(150 * hpMult), label: '' };
     }
   }
 
@@ -2310,134 +3100,166 @@ export class SimEngine {
     n: Nation
   ): Array<{ dx: number; dy: number; prop: PropType; variant?: number }> {
     const pattern = this.getKingdomBuildingPattern(n);
-    const slots: Array<{ dx: number; dy: number; prop: PropType; variant?: number }> = [];
+    const spacing = this.getKingdomBuildingSpacing(n);
+    const rawInterior: Array<{ dx: number; dy: number; prop: PropType; variant?: number }> = [];
 
+    // 1. Interior districts per architectural style
     if (pattern === 'Iron Citadel') {
-      // Inner armored core: workshops, barracks rows, watchtower corners
-      slots.push(
-        { dx: -3, dy: 0, prop: PropType.WORKSHOP },
-        { dx: 3, dy: 0, prop: PropType.WORKSHOP },
-        { dx: 0, dy: 3, prop: PropType.BISTRO },
-        { dx: -2, dy: 1, prop: PropType.MATTRESS_HUT },
-        { dx: 2, dy: 1, prop: PropType.MATTRESS_HUT },
-        { dx: 2, dy: -1, prop: PropType.MATTRESS_HUT },
-        { dx: -2, dy: 2, prop: PropType.MATTRESS_HUT },
-        { dx: 2, dy: 2, prop: PropType.MATTRESS_HUT },
-        { dx: 0, dy: -3, prop: PropType.CART_DEPOT },
-        { dx: -2, dy: -3, prop: PropType.ARCHIVE },
-        { dx: -3, dy: -3, prop: PropType.WATCHTOWER },
-        { dx: 3, dy: -3, prop: PropType.WATCHTOWER },
-        { dx: -3, dy: 3, prop: PropType.WATCHTOWER },
-        { dx: 3, dy: 3, prop: PropType.WATCHTOWER },
-        { dx: -4, dy: 2, prop: PropType.SPOTLIGHT },
-        { dx: 4, dy: -2, prop: PropType.SPOTLIGHT }
-      );
-      // Inner square bastion walls (radius 5) with cardinal gates
-      for (let d = -5; d <= 5; d++) {
-        slots.push(
-          { dx: d, dy: -5, prop: d === 0 ? PropType.BARRICADE_GATE : PropType.BARRICADE_WALL, variant: 4 },
-          { dx: d, dy: 5, prop: d === 0 ? PropType.BARRICADE_GATE : PropType.BARRICADE_WALL, variant: 4 }
-        );
-        if (Math.abs(d) < 5) {
-          slots.push(
-            { dx: -5, dy: d, prop: d === 0 ? PropType.BARRICADE_GATE : PropType.BARRICADE_WALL, variant: 4 },
-            { dx: 5, dy: d, prop: d === 0 ? PropType.BARRICADE_GATE : PropType.BARRICADE_WALL, variant: 4 }
-          );
-        }
-      }
-      // Outer citadel perimeter (radius 9) with corner watchtowers
-      slots.push(
-        { dx: -9, dy: -9, prop: PropType.WATCHTOWER },
-        { dx: 9, dy: -9, prop: PropType.WATCHTOWER },
-        { dx: -9, dy: 9, prop: PropType.WATCHTOWER },
-        { dx: 9, dy: 9, prop: PropType.WATCHTOWER },
-        { dx: -6, dy: -8, prop: PropType.SPOTLIGHT },
-        { dx: 6, dy: 8, prop: PropType.SPOTLIGHT }
-      );
-      for (let d = -9; d <= 9; d++) {
-        if (Math.abs(d) === 9) continue;
-        slots.push(
-          { dx: d, dy: -9, prop: Math.abs(d) <= 1 ? PropType.BARRICADE_GATE : PropType.BARRICADE_WALL, variant: 0 },
-          { dx: d, dy: 9, prop: Math.abs(d) <= 1 ? PropType.BARRICADE_GATE : PropType.BARRICADE_WALL, variant: 0 },
-          { dx: -9, dy: d, prop: Math.abs(d) <= 1 ? PropType.BARRICADE_GATE : PropType.BARRICADE_WALL, variant: 0 },
-          { dx: 9, dy: d, prop: Math.abs(d) <= 1 ? PropType.BARRICADE_GATE : PropType.BARRICADE_WALL, variant: 0 }
-        );
-      }
-    } else if (pattern === 'Merchant Bazaar') {
-      // Wide open N/S & E/W trade avenues (|dx| <= 1 or |dy| <= 1 kept clear), flanked by Cart Depots & Bistros
-      slots.push(
-        { dx: 3, dy: -2, prop: PropType.CART_DEPOT },
-        { dx: -3, dy: -2, prop: PropType.CART_DEPOT },
-        { dx: 3, dy: 2, prop: PropType.BISTRO },
-        { dx: -3, dy: 2, prop: PropType.BISTRO },
-        { dx: 5, dy: -2, prop: PropType.BISTRO },
-        { dx: -5, dy: 2, prop: PropType.CART_DEPOT },
-        { dx: -2, dy: 4, prop: PropType.WORKSHOP },
-        { dx: 2, dy: 4, prop: PropType.WORKSHOP },
-        { dx: -2, dy: -4, prop: PropType.ARCHIVE },
-        { dx: 2, dy: -4, prop: PropType.ARCHIVE },
-        { dx: -5, dy: -2, prop: PropType.SPOTLIGHT },
-        { dx: 5, dy: 2, prop: PropType.SPOTLIGHT },
-        { dx: -2, dy: 6, prop: PropType.SPOTLIGHT },
-        { dx: 2, dy: -6, prop: PropType.SPOTLIGHT },
-        // Symmetrical 4-quadrant merchant quarters
-        { dx: -4, dy: -4, prop: PropType.MATTRESS_HUT },
-        { dx: -5, dy: -4, prop: PropType.MATTRESS_HUT },
-        { dx: 4, dy: -4, prop: PropType.MATTRESS_HUT },
-        { dx: 5, dy: -4, prop: PropType.MATTRESS_HUT },
-        { dx: -4, dy: 4, prop: PropType.MATTRESS_HUT },
-        { dx: -5, dy: 4, prop: PropType.MATTRESS_HUT },
-        { dx: 4, dy: 4, prop: PropType.MATTRESS_HUT },
-        { dx: 5, dy: 4, prop: PropType.MATTRESS_HUT },
-        { dx: -8, dy: -8, prop: PropType.WATCHTOWER },
-        { dx: 8, dy: -8, prop: PropType.WATCHTOWER },
-        { dx: -8, dy: 8, prop: PropType.WATCHTOWER },
-        { dx: 8, dy: 8, prop: PropType.WATCHTOWER }
-      );
-      // Bazaar showcase perimeter (radius 8) with wide 3-tile open gates
-      for (let d = -7; d <= 7; d++) {
-        const isWideGate = Math.abs(d) <= 1;
-        slots.push(
-          { dx: d, dy: -8, prop: isWideGate ? PropType.BARRICADE_GATE : PropType.BARRICADE_WALL, variant: 2 },
-          { dx: d, dy: 8, prop: isWideGate ? PropType.BARRICADE_GATE : PropType.BARRICADE_WALL, variant: 3 },
-          { dx: -8, dy: d, prop: isWideGate ? PropType.BARRICADE_GATE : PropType.BARRICADE_WALL, variant: 2 },
-          { dx: 8, dy: d, prop: isWideGate ? PropType.BARRICADE_GATE : PropType.BARRICADE_WALL, variant: 3 }
-        );
-      }
-    } else if (pattern === 'Cathedral Spire') {
-      // Sacred radial cross of Bistros & Spotlights, diagonal Archives, octagonal sanctum ring
-      slots.push(
-        { dx: 0, dy: -3, prop: PropType.BISTRO },
-        { dx: 0, dy: 3, prop: PropType.BISTRO },
-        { dx: -3, dy: 0, prop: PropType.BISTRO },
-        { dx: 3, dy: 0, prop: PropType.BISTRO },
-        { dx: -3, dy: -3, prop: PropType.ARCHIVE },
-        { dx: 3, dy: -3, prop: PropType.ARCHIVE },
-        { dx: -3, dy: 3, prop: PropType.WORKSHOP },
-        { dx: 3, dy: 3, prop: PropType.CART_DEPOT },
-        { dx: 0, dy: -6, prop: PropType.SPOTLIGHT },
-        { dx: 0, dy: 6, prop: PropType.SPOTLIGHT },
+      rawInterior.push(
+        { dx: -4, dy: -3, prop: PropType.WORKSHOP },
+        { dx: 4, dy: -3, prop: PropType.WORKSHOP },
+        { dx: -4, dy: 3, prop: PropType.BISTRO },
+        { dx: 4, dy: 3, prop: PropType.CART_DEPOT },
+        { dx: -7, dy: -3, prop: PropType.MATTRESS_HUT },
+        { dx: 7, dy: -3, prop: PropType.MATTRESS_HUT },
+        { dx: -7, dy: 3, prop: PropType.MATTRESS_HUT },
+        { dx: 7, dy: 3, prop: PropType.MATTRESS_HUT },
+        { dx: -3, dy: -7, prop: PropType.MATTRESS_HUT },
+        { dx: 3, dy: -7, prop: PropType.ARCHIVE },
+        { dx: -3, dy: 7, prop: PropType.MATTRESS_HUT },
+        { dx: 3, dy: 7, prop: PropType.BISTRO },
         { dx: -6, dy: 0, prop: PropType.SPOTLIGHT },
         { dx: 6, dy: 0, prop: PropType.SPOTLIGHT },
-        { dx: -4, dy: -4, prop: PropType.MATTRESS_HUT },
+        { dx: 0, dy: -6, prop: PropType.SPOTLIGHT },
+        { dx: 0, dy: 6, prop: PropType.SPOTLIGHT }
+      );
+    } else if (pattern === 'Merchant Bazaar') {
+      rawInterior.push(
+        { dx: -4, dy: -3, prop: PropType.CART_DEPOT },
+        { dx: 4, dy: -3, prop: PropType.CART_DEPOT },
+        { dx: -4, dy: 3, prop: PropType.BISTRO },
+        { dx: 4, dy: 3, prop: PropType.BISTRO },
+        { dx: -7, dy: -3, prop: PropType.MATTRESS_HUT },
+        { dx: 7, dy: -3, prop: PropType.MATTRESS_HUT },
+        { dx: -7, dy: 3, prop: PropType.MATTRESS_HUT },
+        { dx: 7, dy: 3, prop: PropType.MATTRESS_HUT },
+        { dx: -3, dy: -6, prop: PropType.WORKSHOP },
+        { dx: 3, dy: -6, prop: PropType.ARCHIVE },
+        { dx: -3, dy: 6, prop: PropType.WORKSHOP },
+        { dx: 3, dy: 6, prop: PropType.ARCHIVE },
+        { dx: 0, dy: -5, prop: PropType.SPOTLIGHT },
+        { dx: 0, dy: 5, prop: PropType.SPOTLIGHT },
+        { dx: -5, dy: 0, prop: PropType.SPOTLIGHT },
+        { dx: 5, dy: 0, prop: PropType.SPOTLIGHT }
+      );
+    } else if (pattern === 'Cathedral Spire') {
+      rawInterior.push(
+        { dx: 0, dy: -4, prop: PropType.BISTRO },
+        { dx: 0, dy: 4, prop: PropType.BISTRO },
+        { dx: -4, dy: 0, prop: PropType.BISTRO },
+        { dx: 4, dy: 0, prop: PropType.CART_DEPOT },
+        { dx: -4, dy: -4, prop: PropType.ARCHIVE },
+        { dx: 4, dy: -4, prop: PropType.ARCHIVE },
+        { dx: -4, dy: 4, prop: PropType.WORKSHOP },
+        { dx: 4, dy: 4, prop: PropType.WORKSHOP },
+        { dx: -7, dy: -4, prop: PropType.MATTRESS_HUT },
+        { dx: 7, dy: -4, prop: PropType.MATTRESS_HUT },
+        { dx: -7, dy: 4, prop: PropType.MATTRESS_HUT },
+        { dx: 7, dy: 4, prop: PropType.MATTRESS_HUT },
+        { dx: 0, dy: -7, prop: PropType.SPOTLIGHT },
+        { dx: 0, dy: 7, prop: PropType.SPOTLIGHT },
+        { dx: -7, dy: 0, prop: PropType.SPOTLIGHT },
+        { dx: 7, dy: 0, prop: PropType.SPOTLIGHT }
+      );
+    } else if (pattern === 'Imperial Concourse') {
+      rawInterior.push(
+        { dx: -4, dy: -3, prop: PropType.WORKSHOP },
+        { dx: 4, dy: 3, prop: PropType.WORKSHOP },
+        { dx: 0, dy: -4, prop: PropType.BISTRO },
+        { dx: -4, dy: 3, prop: PropType.CART_DEPOT },
+        { dx: 0, dy: 4, prop: PropType.CART_DEPOT },
+        { dx: 4, dy: -3, prop: PropType.BISTRO },
+        { dx: -3, dy: -7, prop: PropType.ARCHIVE },
+        { dx: 3, dy: 7, prop: PropType.ARCHIVE },
+        { dx: -7, dy: 0, prop: PropType.MATTRESS_HUT },
+        { dx: 7, dy: 0, prop: PropType.MATTRESS_HUT },
+        { dx: -6, dy: -6, prop: PropType.MATTRESS_HUT },
+        { dx: 6, dy: -6, prop: PropType.MATTRESS_HUT },
+        { dx: -6, dy: 6, prop: PropType.MATTRESS_HUT },
+        { dx: 6, dy: 6, prop: PropType.MATTRESS_HUT },
+        { dx: -4, dy: 0, prop: PropType.SPOTLIGHT },
+        { dx: 4, dy: 0, prop: PropType.SPOTLIGHT },
+        { dx: 3, dy: -7, prop: PropType.SPOTLIGHT },
+        { dx: -3, dy: 7, prop: PropType.SPOTLIGHT }
+      );
+    } else {
+      // Showroom Plaza
+      rawInterior.push(
+        { dx: 0, dy: -4, prop: PropType.BISTRO },
+        { dx: 0, dy: 4, prop: PropType.BISTRO },
+        { dx: -4, dy: 0, prop: PropType.ARCHIVE },
+        { dx: 4, dy: 0, prop: PropType.CART_DEPOT },
+        { dx: -4, dy: -4, prop: PropType.WORKSHOP },
+        { dx: 4, dy: 4, prop: PropType.WORKSHOP },
         { dx: 4, dy: -4, prop: PropType.MATTRESS_HUT },
         { dx: -4, dy: 4, prop: PropType.MATTRESS_HUT },
-        { dx: 4, dy: 4, prop: PropType.MATTRESS_HUT },
-        { dx: -5, dy: -2, prop: PropType.MATTRESS_HUT },
-        { dx: 5, dy: 2, prop: PropType.MATTRESS_HUT },
-        { dx: -2, dy: -5, prop: PropType.MATTRESS_HUT },
-        { dx: 2, dy: 5, prop: PropType.MATTRESS_HUT },
-        { dx: 0, dy: -8, prop: PropType.WATCHTOWER },
-        { dx: 0, dy: 8, prop: PropType.WATCHTOWER },
-        { dx: -8, dy: 0, prop: PropType.WATCHTOWER },
-        { dx: 8, dy: 0, prop: PropType.WATCHTOWER }
+        { dx: -7, dy: -4, prop: PropType.MATTRESS_HUT },
+        { dx: 7, dy: -4, prop: PropType.MATTRESS_HUT },
+        { dx: -7, dy: 4, prop: PropType.MATTRESS_HUT },
+        { dx: 7, dy: 4, prop: PropType.MATTRESS_HUT },
+        { dx: -3, dy: -7, prop: PropType.SPOTLIGHT },
+        { dx: 3, dy: -7, prop: PropType.SPOTLIGHT },
+        { dx: -3, dy: 7, prop: PropType.SPOTLIGHT },
+        { dx: 3, dy: 7, prop: PropType.SPOTLIGHT }
       );
-      // Octagonal cathedral wall ring
-      for (let dy = -8; dy <= 8; dy++) {
-        for (let dx = -8; dx <= 8; dx++) {
+    }
+
+    const scale = spacing === 'Crowded' ? 0.68 : spacing === 'Spaced' ? 1.32 : 1.0;
+    const slots: Array<{ dx: number; dy: number; prop: PropType; variant?: number }> = [];
+    const usedCoords = new Set<string>(['0,0', '2,0', '-2,0', '0,2', '0,-2']);
+
+    for (const s of rawInterior) {
+      let dx = Math.round(s.dx * scale);
+      let dy = Math.round(s.dy * scale);
+      if (Math.abs(dx) <= 1 && Math.abs(dy) <= 1) {
+        if (Math.abs(dx) >= Math.abs(dy)) dx = dx >= 0 ? 2 : -2;
+        else dy = dy >= 0 ? 2 : -2;
+      }
+      const key = `${dx},${dy}`;
+      if (usedCoords.has(key)) continue;
+      usedCoords.add(key);
+      slots.push({ dx, dy, prop: s.prop, variant: s.variant });
+    }
+
+    // Crowded kingdoms pack extra close-quarters infill huts & stalls along inner blocks
+    if (spacing === 'Crowded') {
+      const infill: Array<{ dx: number; dy: number; prop: PropType }> = [
+        { dx: -2, dy: -2, prop: PropType.MATTRESS_HUT },
+        { dx: 2, dy: -2, prop: PropType.MATTRESS_HUT },
+        { dx: -2, dy: 2, prop: PropType.BISTRO },
+        { dx: 2, dy: 2, prop: PropType.WORKSHOP },
+        { dx: -5, dy: -2, prop: PropType.MATTRESS_HUT },
+        { dx: 5, dy: -2, prop: PropType.MATTRESS_HUT },
+        { dx: -2, dy: 5, prop: PropType.MATTRESS_HUT },
+        { dx: 2, dy: 5, prop: PropType.CART_DEPOT },
+      ];
+      for (const inf of infill) {
+        const key = `${inf.dx},${inf.dy}`;
+        if (!usedCoords.has(key)) {
+          usedCoords.add(key);
+          slots.push(inf);
+        }
+      }
+    }
+
+    // 2. Contiguous outer perimeter walls & watchtowers scaled cleanly to kingdom spacing
+    const baseR = pattern === 'Showroom Plaza' ? 9 : 10;
+    const R = Math.max(7, Math.min(13, baseR + (spacing === 'Crowded' ? -2 : spacing === 'Spaced' ? 3 : 0)));
+
+    if (pattern === 'Cathedral Spire') {
+      slots.push(
+        { dx: 0, dy: -R, prop: PropType.WATCHTOWER },
+        { dx: 0, dy: R, prop: PropType.WATCHTOWER },
+        { dx: -R, dy: 0, prop: PropType.WATCHTOWER },
+        { dx: R, dy: 0, prop: PropType.WATCHTOWER }
+      );
+      for (let dy = -R; dy <= R; dy++) {
+        for (let dx = -R; dx <= R; dx++) {
           const r = Math.hypot(dx, dy);
-          if (r >= 7.6 && r <= 8.55 && !(Math.abs(dx) === 0 || Math.abs(dy) === 0)) {
-            const isGate = (Math.abs(dx) === 1 && Math.abs(dy) >= 7) || (Math.abs(dy) === 1 && Math.abs(dx) >= 7);
+          if (r >= R - 0.4 && r <= R + 0.55 && !(Math.abs(dx) === 0 || Math.abs(dy) === 0)) {
+            const isGate =
+              (Math.abs(dx) === 1 && Math.abs(dy) >= R - 1) ||
+              (Math.abs(dy) === 1 && Math.abs(dx) >= R - 1);
             slots.push({
               dx,
               dy,
@@ -2448,37 +3270,17 @@ export class SimEngine {
         }
       }
     } else if (pattern === 'Imperial Concourse') {
-      // Radial command spokes & circular outpost rings
+      const wt = Math.round(R * 0.7);
       slots.push(
-        { dx: -2, dy: 2, prop: PropType.WORKSHOP },
-        { dx: 2, dy: -2, prop: PropType.WORKSHOP },
-        { dx: 0, dy: -3, prop: PropType.BISTRO },
-        { dx: -3, dy: 0, prop: PropType.CART_DEPOT },
-        { dx: 0, dy: 3, prop: PropType.CART_DEPOT },
-        { dx: 3, dy: 0, prop: PropType.BISTRO },
-        { dx: 3, dy: 3, prop: PropType.ARCHIVE },
-        { dx: -3, dy: -3, prop: PropType.ARCHIVE },
-        { dx: -5, dy: -5, prop: PropType.WATCHTOWER },
-        { dx: 5, dy: -5, prop: PropType.WATCHTOWER },
-        { dx: -5, dy: 5, prop: PropType.WATCHTOWER },
-        { dx: 5, dy: 5, prop: PropType.WATCHTOWER },
-        { dx: -5, dy: 0, prop: PropType.MATTRESS_HUT },
-        { dx: 5, dy: 0, prop: PropType.MATTRESS_HUT },
-        { dx: 0, dy: -5, prop: PropType.MATTRESS_HUT },
-        { dx: 0, dy: 5, prop: PropType.MATTRESS_HUT },
-        { dx: -4, dy: 2, prop: PropType.MATTRESS_HUT },
-        { dx: 4, dy: -2, prop: PropType.MATTRESS_HUT },
-        { dx: -2, dy: -4, prop: PropType.MATTRESS_HUT },
-        { dx: 2, dy: 4, prop: PropType.MATTRESS_HUT },
-        { dx: -7, dy: -3, prop: PropType.SPOTLIGHT },
-        { dx: 7, dy: 3, prop: PropType.SPOTLIGHT },
-        { dx: -3, dy: 7, prop: PropType.SPOTLIGHT },
-        { dx: 3, dy: -7, prop: PropType.SPOTLIGHT }
+        { dx: -wt, dy: -wt, prop: PropType.WATCHTOWER },
+        { dx: wt, dy: -wt, prop: PropType.WATCHTOWER },
+        { dx: -wt, dy: wt, prop: PropType.WATCHTOWER },
+        { dx: wt, dy: wt, prop: PropType.WATCHTOWER }
       );
-      for (let dy = -8; dy <= 8; dy++) {
-        for (let dx = -8; dx <= 8; dx++) {
+      for (let dy = -R; dy <= R; dy++) {
+        for (let dx = -R; dx <= R; dx++) {
           const r = Math.hypot(dx, dy);
-          if (r >= 7.2 && r <= 8.1) {
+          if (r >= R - 0.5 && r <= R + 0.45) {
             const isGate = Math.abs(dx) <= 1 || Math.abs(dy) <= 1;
             slots.push({
               dx,
@@ -2490,42 +3292,21 @@ export class SimEngine {
         }
       }
     } else {
-      // Showroom Plaza: 4 symmetrical 2x2 neighborhood clusters around a lit civic square
+      const vTop = pattern === 'Iron Citadel' ? 4 : pattern === 'Merchant Bazaar' ? 2 : 1;
+      const vBot = pattern === 'Iron Citadel' ? 4 : 3;
       slots.push(
-        { dx: 0, dy: -4, prop: PropType.BISTRO },
-        { dx: 0, dy: 4, prop: PropType.BISTRO },
-        { dx: -4, dy: 0, prop: PropType.ARCHIVE },
-        { dx: 4, dy: 0, prop: PropType.CART_DEPOT },
-        { dx: -3, dy: 2, prop: PropType.WORKSHOP },
-        { dx: 3, dy: -2, prop: PropType.WORKSHOP },
-        { dx: -3, dy: -3, prop: PropType.SPOTLIGHT },
-        { dx: 3, dy: -3, prop: PropType.SPOTLIGHT },
-        { dx: -3, dy: 3, prop: PropType.SPOTLIGHT },
-        { dx: 3, dy: 3, prop: PropType.SPOTLIGHT },
-        // 2x2 residential showroom clusters
-        { dx: -4, dy: -5, prop: PropType.MATTRESS_HUT },
-        { dx: -5, dy: -5, prop: PropType.MATTRESS_HUT },
-        { dx: -4, dy: -6, prop: PropType.MATTRESS_HUT },
-        { dx: 4, dy: -5, prop: PropType.MATTRESS_HUT },
-        { dx: 5, dy: -5, prop: PropType.MATTRESS_HUT },
-        { dx: 4, dy: -6, prop: PropType.MATTRESS_HUT },
-        { dx: -4, dy: 5, prop: PropType.MATTRESS_HUT },
-        { dx: -5, dy: 5, prop: PropType.MATTRESS_HUT },
-        { dx: 4, dy: 5, prop: PropType.MATTRESS_HUT },
-        { dx: 5, dy: 5, prop: PropType.MATTRESS_HUT },
-        { dx: -7, dy: -7, prop: PropType.WATCHTOWER },
-        { dx: 7, dy: -7, prop: PropType.WATCHTOWER },
-        { dx: -7, dy: 7, prop: PropType.WATCHTOWER },
-        { dx: 7, dy: 7, prop: PropType.WATCHTOWER }
+        { dx: -R, dy: -R, prop: PropType.WATCHTOWER },
+        { dx: R, dy: -R, prop: PropType.WATCHTOWER },
+        { dx: -R, dy: R, prop: PropType.WATCHTOWER },
+        { dx: R, dy: R, prop: PropType.WATCHTOWER }
       );
-      // Clean Billy & Kallax room-gallery perimeter (radius 7)
-      for (let d = -6; d <= 6; d++) {
+      for (let d = -(R - 1); d <= R - 1; d++) {
         const isGate = Math.abs(d) <= 1;
         slots.push(
-          { dx: d, dy: -7, prop: isGate ? PropType.BARRICADE_GATE : PropType.BARRICADE_WALL, variant: 1 },
-          { dx: d, dy: 7, prop: isGate ? PropType.BARRICADE_GATE : PropType.BARRICADE_WALL, variant: 3 },
-          { dx: -7, dy: d, prop: isGate ? PropType.BARRICADE_GATE : PropType.BARRICADE_WALL, variant: 1 },
-          { dx: 7, dy: d, prop: isGate ? PropType.BARRICADE_GATE : PropType.BARRICADE_WALL, variant: 3 }
+          { dx: d, dy: -R, prop: isGate ? PropType.BARRICADE_GATE : PropType.BARRICADE_WALL, variant: vTop },
+          { dx: d, dy: R, prop: isGate ? PropType.BARRICADE_GATE : PropType.BARRICADE_WALL, variant: vBot },
+          { dx: -R, dy: d, prop: isGate ? PropType.BARRICADE_GATE : PropType.BARRICADE_WALL, variant: vTop },
+          { dx: R, dy: d, prop: isGate ? PropType.BARRICADE_GATE : PropType.BARRICADE_WALL, variant: vBot }
         );
       }
     }
@@ -2568,6 +3349,31 @@ export class SimEngine {
     return false;
   }
 
+  private isNearWalkwayOrWall(tx: number, ty: number, checkWalkwayDist: number, checkWallDist: number): boolean {
+    const rad = Math.max(checkWalkwayDist, checkWallDist);
+    const minY = Math.max(1, ty - rad);
+    const maxY = Math.min(GRID_H - 2, ty + rad);
+    const minX = Math.max(1, tx - rad);
+    const maxX = Math.min(GRID_W - 2, tx + rad);
+    for (let y = minY; y <= maxY; y++) {
+      const row = y * GRID_W;
+      for (let x = minX; x <= maxX; x++) {
+        const d = Math.max(Math.abs(x - tx), Math.abs(y - ty));
+        const idx = row + x;
+        if (d <= checkWalkwayDist && this.biome[idx] === BiomeType.WALKWAY) {
+          return true;
+        }
+        if (
+          d <= checkWallDist &&
+          (this.prop[idx] === PropType.BARRICADE_WALL || this.prop[idx] === PropType.BARRICADE_GATE)
+        ) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   private findEmptyLandBlueprintSite(
     n: Nation,
     availScrap: number,
@@ -2579,6 +3385,7 @@ export class SimEngine {
       maxWorkshops: number;
       maxDepots: number;
       maxArchives: number;
+      maxTechLabs: number;
       maxSpotlights: number;
       maxWatchtowers: number;
     }
@@ -2599,10 +3406,11 @@ export class SimEngine {
       depots: 0,
       watchtowers: 0,
       spotlights: 0,
+      techLabs: 0,
     };
 
     const makeCandidate = (tx: number, ty: number, prop: PropType, variant = 0) => {
-      const cost = this.getBuildingCost(prop);
+      const cost = this.getBuildingCost(prop, n);
       return {
         x: tx,
         y: ty,
@@ -2617,44 +3425,187 @@ export class SimEngine {
       };
     };
 
-    // 1. Develop united city hubs if any exist
+    const spacing = this.getKingdomBuildingSpacing(n);
+    const hubScale = spacing === 'Crowded' ? 0.72 : spacing === 'Spaced' ? 1.35 : 1.0;
+    const hubClearance = spacing === 'Crowded' ? 1 : spacing === 'Spaced' ? 4 : 3;
+
+    // 1. Develop united city hubs scaled to the kingdom's building spacing
     if (n.unionHubs && n.unionHubs.length > 0) {
       const hubOffsets: Array<{ dx: number; dy: number; prop: PropType }> = [
-        { dx: 3, dy: 0, prop: PropType.CART_DEPOT },
-        { dx: -3, dy: 0, prop: PropType.BISTRO },
-        { dx: 0, dy: 3, prop: PropType.WORKSHOP },
-        { dx: -3, dy: -3, prop: PropType.MATTRESS_HUT },
-        { dx: 3, dy: 3, prop: PropType.MATTRESS_HUT },
-        { dx: 0, dy: -4, prop: PropType.SPOTLIGHT },
-        { dx: -4, dy: 4, prop: PropType.WATCHTOWER },
+        { dx: 4, dy: -3, prop: PropType.CART_DEPOT },
+        { dx: -4, dy: -3, prop: PropType.BISTRO },
+        { dx: -4, dy: 3, prop: PropType.WORKSHOP },
+        { dx: 4, dy: 3, prop: PropType.MATTRESS_HUT },
+        { dx: -7, dy: 0, prop: PropType.MATTRESS_HUT },
+        { dx: 7, dy: 0, prop: PropType.MATTRESS_HUT },
+        { dx: 0, dy: -5, prop: PropType.SPOTLIGHT },
+        { dx: 0, dy: 5, prop: PropType.SPOTLIGHT },
+        { dx: -8, dy: 8, prop: PropType.WATCHTOWER },
+        { dx: 8, dy: -8, prop: PropType.WATCHTOWER },
       ];
       for (const hub of n.unionHubs) {
         for (const off of hubOffsets) {
-          const tx = hub.x + off.dx;
-          const ty = hub.y + off.dy;
+          const tx = hub.x + Math.round(off.dx * hubScale);
+          const ty = hub.y + Math.round(off.dy * hubScale);
           if (tx < 2 || tx >= GRID_W - 2 || ty < 2 || ty >= GRID_H - 2) continue;
           if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 2) continue;
           const idx = ty * GRID_W + tx;
           if (this.territory[idx] !== n.id || this.activeBuilderTargets.has(idx)) continue;
+          if (this.biome[idx] === BiomeType.WALKWAY) continue;
           const existing = this.prop[idx];
           if (existing !== PropType.NONE && (this.propOwner[idx] === n.id || !this.isDismantlableIkeaProp(existing))) {
             continue;
           }
+          if (this.hasOwnedBuildingNear(n.id, tx, ty, hubClearance, false)) continue;
           const cand = makeCandidate(tx, ty, off.prop);
           if (cand.affordable) return cand;
         }
       }
     }
 
-    // 2. Scan empty owned territory across the kingdom for new districts, lights, & frontier walls
-    let fallback: ReturnType<typeof makeCandidate> | null = null;
-    const scanSpan = n.territoryTiles > 260 ? 95 : 55;
+    const scanSpan = n.territoryTiles > 260 ? 92 : 62;
     const minX = Math.max(2, n.capitalX - scanSpan);
     const maxX = Math.min(GRID_W - 3, n.capitalX + scanSpan);
     const minY = Math.max(2, n.capitalY - scanSpan);
     const maxY = Math.min(GRID_H - 3, n.capitalY + scanSpan);
 
-    for (let attempt = 0; attempt < 95; attempt++) {
+    let fallback: ReturnType<typeof makeCandidate> | null = null;
+
+    // 2. Layer 1: Outer Territory Border Barricades & Watchtowers (contiguous along actual borders!)
+    if (Math.random() < 0.52) {
+      let bestBorder: {
+        x: number;
+        y: number;
+        prop: PropType;
+        variant: number;
+        score: number;
+      } | null = null;
+
+      for (let attempt = 0; attempt < 110; attempt++) {
+        const tx = minX + ((Math.random() * (maxX - minX + 1)) | 0);
+        const ty = minY + ((Math.random() * (maxY - minY + 1)) | 0);
+        if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 2) continue;
+        const idx = ty * GRID_W + tx;
+        if (this.territory[idx] !== n.id || this.activeBuilderTargets.has(idx)) continue;
+
+        const existing = this.prop[idx];
+        if (existing !== PropType.NONE) {
+          if (this.propOwner[idx] === n.id || !this.isDismantlableIkeaProp(existing)) continue;
+        }
+
+        const nTop = this.territory[idx - GRID_W];
+        const nBot = this.territory[idx + GRID_W];
+        const nLft = this.territory[idx - 1];
+        const nRgt = this.territory[idx + 1];
+        if (nTop === n.id && nBot === n.id && nLft === n.id && nRgt === n.id) continue;
+
+        // Check if border touches a friendly or union neighbor
+        const nbs = [nTop, nBot, nLft, nRgt];
+        let touchesFriendly = false;
+        let touchesUnion = false;
+        for (const nb of nbs) {
+          if (nb >= 0 && nb !== n.id && this.nations[nb]?.alive) {
+            if (this.getStance(n.id, nb) === 'UNION') touchesUnion = true;
+            if (this.areFriendly(n.id, nb)) touchesFriendly = true;
+          }
+        }
+
+        const onRoad = this.biome[idx] === BiomeType.WALKWAY;
+        if (touchesUnion) {
+          // Never build dividing walls across Union borders; only light road gates if needed
+          if (!onRoad) continue;
+        } else if (touchesFriendly && !onRoad) {
+          // Keep friendly trade/ally borders open rather than sealing friends behind walls
+          continue;
+        }
+
+        // Do not place solid walls on buildings or block roads
+        if (!onRoad && this.hasOwnedBuildingNear(n.id, tx, ty, 1, false)) continue;
+
+        // Count neighboring walls to extend existing border walls into clean single-tile chains
+        let adjWalls = 0;
+        let adjGates = 0;
+        for (const nIdx of [idx - GRID_W, idx + GRID_W, idx - 1, idx + 1]) {
+          if (this.propOwner[nIdx] === n.id) {
+            if (this.prop[nIdx] === PropType.BARRICADE_WALL || this.prop[nIdx] === PropType.WATCHTOWER) {
+              adjWalls++;
+            } else if (this.prop[nIdx] === PropType.BARRICADE_GATE) {
+              adjGates++;
+            }
+          }
+        }
+        // Avoid thick 2-tile-wide wall clusters
+        if (adjWalls >= 3) continue;
+
+        let chosenProp: PropType = PropType.BARRICADE_WALL;
+        let variant = 1 + ((tx + ty) % 4);
+        const watchtowerGap = spacing === 'Crowded' ? 8 : spacing === 'Spaced' ? 14 : 11;
+        if (onRoad) {
+          if (adjGates > 0) continue; // Keep adjacent road tiles clean around a gate
+          chosenProp = PropType.BARRICADE_GATE;
+          variant = 0;
+        } else if (
+          bld.watchtowers < caps.maxWatchtowers &&
+          !this.hasOwnedBuildingNear(n.id, tx, ty, watchtowerGap, true) &&
+          (tx + ty) % 5 === 0
+        ) {
+          chosenProp = PropType.WATCHTOWER;
+          variant = 0;
+        } else if ((tx + ty) % 10 === 0) {
+          chosenProp = PropType.BARRICADE_GATE;
+          variant = 0;
+        }
+
+        // Prefer extending an existing wall chain (`adjWalls === 1` or `2`) so borders look clean & continuous
+        const score = (adjWalls === 1 ? 30 : adjWalls === 2 ? 22 : 6) + (chosenProp === PropType.WATCHTOWER ? 8 : 0);
+        if (!bestBorder || score > bestBorder.score) {
+          bestBorder = { x: tx, y: ty, prop: chosenProp, variant, score };
+        }
+      }
+
+      if (bestBorder) {
+        const cand = makeCandidate(bestBorder.x, bestBorder.y, bestBorder.prop, bestBorder.variant);
+        if (cand.affordable) return cand;
+        fallback = cand;
+      }
+    }
+
+    // 3. Layer 2: Inner Defense Ring scaled by kingdom spacing
+    if (n.territoryTiles >= 130 && Math.random() < 0.25) {
+      const capRingRad = spacing === 'Crowded' ? 12 : spacing === 'Spaced' ? 18 : 15;
+      const hubRingRad = spacing === 'Crowded' ? 8 : spacing === 'Spaced' ? 13 : 10;
+      const anchors = [
+        { x: n.capitalX, y: n.capitalY, rad: capRingRad },
+        ...(n.unionHubs || []).map((h) => ({ x: h.x, y: h.y, rad: hubRingRad })),
+      ];
+      for (const anchor of anchors) {
+        for (let attempt = 0; attempt < 36; attempt++) {
+          const ang = (attempt / 36) * Math.PI * 2 + Math.random() * 0.17;
+          const tx = Math.round(anchor.x + Math.cos(ang) * anchor.rad);
+          const ty = Math.round(anchor.y + Math.sin(ang) * anchor.rad);
+          if (tx < 2 || tx >= GRID_W - 2 || ty < 2 || ty >= GRID_H - 2) continue;
+          if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 2) continue;
+          const idx = ty * GRID_W + tx;
+          if (this.territory[idx] !== n.id || this.activeBuilderTargets.has(idx)) continue;
+          const existing = this.prop[idx];
+          if (existing !== PropType.NONE && (this.propOwner[idx] === n.id || !this.isDismantlableIkeaProp(existing))) continue;
+          if (this.hasOwnedBuildingNear(n.id, tx, ty, 2, false)) continue;
+
+          const isCardinal = Math.abs(tx - anchor.x) <= 1 || Math.abs(ty - anchor.y) <= 1;
+          const onRoad = this.biome[idx] === BiomeType.WALKWAY;
+          const propType = isCardinal || onRoad || (tx + ty) % 9 === 0 ? PropType.BARRICADE_GATE : PropType.BARRICADE_WALL;
+          const cand = makeCandidate(tx, ty, propType, propType === PropType.BARRICADE_WALL ? 4 : 0);
+          if (cand.affordable) return cand;
+          if (!fallback) fallback = cand;
+        }
+      }
+    }
+
+    // 4. Interior Empty Land Districts: spacing depends on kingdom (Crowded: 1-tile alleys, Balanced: 4, Spaced: 5)
+    const walkClear = spacing === 'Crowded' ? 0 : spacing === 'Spaced' ? 2 : 1;
+    const wallClear = spacing === 'Crowded' ? 1 : 2;
+    const interiorGap = spacing === 'Crowded' ? 1 : spacing === 'Spaced' ? 5 : 4;
+    for (let attempt = 0; attempt < 85; attempt++) {
       const tx = minX + ((Math.random() * (maxX - minX + 1)) | 0);
       const ty = minY + ((Math.random() * (maxY - minY + 1)) | 0);
       if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 2) continue;
@@ -2666,68 +3617,36 @@ export class SimEngine {
         if (this.propOwner[idx] === n.id || !this.isDismantlableIkeaProp(existing)) continue;
       }
 
-      // Check 4-neighbors to distinguish outer frontier vs interior empty land
       const nTop = this.territory[idx - GRID_W];
       const nBot = this.territory[idx + GRID_W];
       const nLft = this.territory[idx - 1];
       const nRgt = this.territory[idx + 1];
       const isFrontier = nTop !== n.id || nBot !== n.id || nLft !== n.id || nRgt !== n.id;
+      if (isFrontier) continue;
 
-      if (isFrontier) {
-        // Don't wall off a friendly UNION/ALLIANCE neighbor without gates
-        const neighbors = [nTop, nBot, nLft, nRgt];
-        const touchesUnionFriend = neighbors.some(
-          (nb) => nb >= 0 && nb !== n.id && this.nations[nb]?.alive && this.areFriendly(n.id, nb)
-        );
-        if (touchesUnionFriend) {
-          // Connect with a gate along walkable/road crossings instead of blocking walls
-          if (this.biome[idx] === BiomeType.WALKWAY && Math.random() < 0.35) {
-            const cand = makeCandidate(tx, ty, PropType.BARRICADE_GATE, 0);
-            if (cand.affordable) return cand;
-          }
-          continue;
-        }
-
-        // Fortify outer empty border with Watchtowers and gated Barricade Walls
-        if (
-          bld.watchtowers < caps.maxWatchtowers &&
-          !this.hasOwnedBuildingNear(n.id, tx, ty, 9, true)
-        ) {
-          const cand = makeCandidate(tx, ty, PropType.WATCHTOWER);
-          if (cand.affordable) return cand;
-          if (!fallback) fallback = cand;
-          continue;
-        }
-
-        // Avoid choking tiles with walls on 3+ orthogonal sides
-        let adjWalls = 0;
-        if (this.prop[idx - GRID_W] === PropType.BARRICADE_WALL) adjWalls++;
-        if (this.prop[idx + GRID_W] === PropType.BARRICADE_WALL) adjWalls++;
-        if (this.prop[idx - 1] === PropType.BARRICADE_WALL) adjWalls++;
-        if (this.prop[idx + 1] === PropType.BARRICADE_WALL) adjWalls++;
-        if (adjWalls >= 2 && Math.random() < 0.7) continue;
-
-        const isGate = (tx + ty) % 6 === 0 || this.biome[idx] === BiomeType.WALKWAY;
-        const cand = makeCandidate(
-          tx,
-          ty,
-          isGate ? PropType.BARRICADE_GATE : PropType.BARRICADE_WALL,
-          isGate ? 0 : 1 + ((tx + ty) % 4)
-        );
-        if (cand.affordable) return cand;
-        if (!fallback) fallback = cand;
-        continue;
-      }
-
-      // Interior empty land: keep roads clear and space buildings cleanly (no 3-tile crowding)
-      if (this.biome[idx] === BiomeType.WALKWAY && Math.random() < 0.75) continue;
-      if (this.hasOwnedBuildingNear(n.id, tx, ty, 3, false)) continue;
+      if (this.isNearWalkwayOrWall(tx, ty, walkClear, wallClear)) continue;
+      if (this.hasOwnedBuildingNear(n.id, tx, ty, interiorGap, false)) continue;
 
       let chosenProp: PropType | null = null;
+      const canBuildLab = hasTech(n, 'swedish_schematics') || n.techTier >= 2;
+      const canBuildEscalator =
+        hasTech(n, 'maintenance_escalators') ||
+        (hasTech(n, 'automated_cart_rails') && n.territoryTiles >= 150);
+      const ownedEscalators = this.escalatorIndices.filter((eIdx) => this.propOwner[eIdx] === n.id).length;
+      const hasEscalatorNear = this.escalatorIndices.some((eIdx) => {
+        if (this.propOwner[eIdx] !== n.id) return false;
+        const ex = eIdx % GRID_W;
+        const ey = (eIdx / GRID_W) | 0;
+        return Math.hypot(ex - tx, ey - ty) < 18;
+      });
       if (this.lightMap[idx] === 0 && bld.spotlights < caps.maxSpotlights) {
         chosenProp = PropType.SPOTLIGHT;
       } else if (bld.huts < caps.maxHuts && (n.population >= n.housingCap - 8 || Math.random() < 0.45)) {
         chosenProp = PropType.MATTRESS_HUT;
+      } else if (canBuildEscalator && ownedEscalators < 3 && !hasEscalatorNear && Math.random() < 0.25) {
+        chosenProp = PropType.ESCALATOR;
+      } else if (canBuildLab && (bld.techLabs ?? 0) < caps.maxTechLabs) {
+        chosenProp = PropType.TECH_LAB;
       } else if (bld.bistros < caps.maxBistros) {
         chosenProp = PropType.BISTRO;
       } else if (bld.workshops < caps.maxWorkshops) {
@@ -2773,24 +3692,29 @@ export class SimEngine {
       depots: 0,
       watchtowers: 0,
       spotlights: 0,
+      techLabs: 0,
     };
 
+    const spacing = this.getKingdomBuildingSpacing(n);
+    const densityMult = spacing === 'Crowded' ? 1.35 : spacing === 'Spaced' ? 0.85 : 1.0;
+    const bpClearance = spacing === 'Crowded' ? 1 : spacing === 'Spaced' ? 3 : 2;
     const caps = {
-      maxHuts: Math.max(8, Math.floor(n.territoryTiles / 22)),
-      maxBistros: Math.max(4, Math.floor(n.territoryTiles / 55)),
-      maxWorkshops: Math.max(4, Math.floor(n.territoryTiles / 65)),
-      maxDepots: Math.max(3, Math.floor(n.territoryTiles / 75)),
-      maxArchives: Math.max(3, Math.floor(n.territoryTiles / 85)),
+      maxHuts: Math.max(8, Math.floor((n.territoryTiles / 22) * densityMult)),
+      maxBistros: Math.max(4, Math.floor((n.territoryTiles / 55) * densityMult)),
+      maxWorkshops: Math.max(4, Math.floor((n.territoryTiles / 65) * densityMult)),
+      maxDepots: Math.max(3, Math.floor((n.territoryTiles / 75) * densityMult)),
+      maxArchives: Math.max(3, Math.floor((n.territoryTiles / 85) * densityMult)),
+      maxTechLabs: Math.max(2, Math.floor((n.territoryTiles / 85) * densityMult)),
       maxSpotlights: Math.max(5, Math.floor(n.territoryTiles / 35)),
-      maxWatchtowers: Math.max(6, Math.floor(n.territoryTiles / 45)),
+      maxWatchtowers: Math.max(6, Math.floor(n.territoryTiles / 40)),
     };
 
     const availScrap = n.scrap + (carryType === 'scrap' ? carryAmount : 0);
     const availWrenches = n.allenWrenches + (carryType === 'wrench' ? carryAmount : 0);
     const availMeatballs = n.meatballs + (carryType === 'meatball' ? carryAmount : 0);
 
-    // If the kingdom controls lots of empty land, occasionally develop outer districts even while finishing capital rings
-    if (n.territoryTiles >= 90 && Math.random() < 0.38) {
+    // Prioritize outer border fortifications & empty-land districts when the kingdom has room
+    if (n.territoryTiles >= 85 && Math.random() < 0.48) {
       const emptySite = this.findEmptyLandBlueprintSite(
         n,
         availScrap,
@@ -2830,19 +3754,34 @@ export class SimEngine {
       // Don't stomp another living nation's claimed heartland
       if (existingOwner >= 0 && existingOwner !== n.id) continue;
 
+      // Never place solid barricade walls on trade walkways; upgrade to gates
+      let resolvedProp = slot.prop;
+      let resolvedVariant = slot.variant ?? 0;
+      if (resolvedProp === PropType.BARRICADE_WALL && this.biome[idx] === BiomeType.WALKWAY) {
+        resolvedProp = PropType.BARRICADE_GATE;
+        resolvedVariant = 0;
+      }
+
+      // Enforce kingdom-specific building spacing for interior buildings
+      const isWallOrGate =
+        resolvedProp === PropType.BARRICADE_WALL || resolvedProp === PropType.BARRICADE_GATE;
+      if (!isWallOrGate && this.hasOwnedBuildingNear(n.id, tx, ty, bpClearance, false)) {
+        continue;
+      }
+
       // Soft building caps scaled to territory so kingdoms expand balanced cities across empty land
-      if (slot.prop === PropType.MATTRESS_HUT && bld.huts >= caps.maxHuts && n.population < n.housingCap - 4) continue;
-      if (slot.prop === PropType.BISTRO && bld.bistros >= caps.maxBistros) continue;
-      if (slot.prop === PropType.WORKSHOP && bld.workshops >= caps.maxWorkshops) continue;
-      if (slot.prop === PropType.CART_DEPOT && bld.depots >= caps.maxDepots) continue;
-      if (slot.prop === PropType.ARCHIVE && (n.techTier < 2 || bld.archives >= caps.maxArchives)) continue;
-      if (slot.prop === PropType.SPOTLIGHT && this.lightMap[idx] > 0 && bld.spotlights >= caps.maxSpotlights) continue;
-      if (slot.prop === PropType.WATCHTOWER && bld.watchtowers >= caps.maxWatchtowers) continue;
+      if (resolvedProp === PropType.MATTRESS_HUT && bld.huts >= caps.maxHuts && n.population < n.housingCap - 4) continue;
+      if (resolvedProp === PropType.BISTRO && bld.bistros >= caps.maxBistros) continue;
+      if (resolvedProp === PropType.WORKSHOP && bld.workshops >= caps.maxWorkshops) continue;
+      if (resolvedProp === PropType.CART_DEPOT && bld.depots >= caps.maxDepots) continue;
+      if (resolvedProp === PropType.ARCHIVE && (n.techTier < 2 || bld.archives >= caps.maxArchives)) continue;
+      if (resolvedProp === PropType.SPOTLIGHT && this.lightMap[idx] > 0 && bld.spotlights >= caps.maxSpotlights) continue;
+      if (resolvedProp === PropType.WATCHTOWER && bld.watchtowers >= caps.maxWatchtowers) continue;
 
       // Avoid assigning two builders of the same nation to the same blueprint tile (O(1) lookup)
       if (this.activeBuilderTargets.has(idx)) continue;
 
-      const cost = this.getBuildingCost(slot.prop);
+      const cost = this.getBuildingCost(resolvedProp, n);
       const affordable =
         availScrap >= cost.scrap &&
         availWrenches >= cost.wrenches &&
@@ -2851,8 +3790,8 @@ export class SimEngine {
       const candidate = {
         x: tx,
         y: ty,
-        prop: slot.prop,
-        variant: slot.variant ?? 0,
+        prop: resolvedProp,
+        variant: resolvedVariant,
         affordable,
         needsScrap: availScrap < cost.scrap,
         needsWrenches: availWrenches < cost.wrenches,
@@ -3198,6 +4137,7 @@ export class SimEngine {
     }
 
     if (captured > 0) {
+      this.smoothTerritoryBorders();
       this.dirtyMap = true;
       this.dirtyLight = true;
       if (Math.random() < 0.08) {
@@ -3262,6 +4202,7 @@ export class SimEngine {
       n.armyCount = 0;
       n.armyCap = 0;
       n.buildingPattern = this.getKingdomBuildingPattern(n);
+      n.buildingSpacing = this.getKingdomBuildingSpacing(n);
       n.jobs = {
         scavengers: 0,
         builders: 0,
@@ -3278,12 +4219,15 @@ export class SimEngine {
         depots: 0,
         watchtowers: 0,
         spotlights: 0,
+        techLabs: 0,
       };
     }
 
     this.nationBuildingsCache.clear();
     this.lightSourceIndices = [];
     this.watchtowerIndices = [];
+    this.techLabIndices = [];
+    this.escalatorIndices = [];
 
     for (let i = 0; i < this.territory.length; i++) {
       const tid = this.territory[i];
@@ -3298,6 +4242,12 @@ export class SimEngine {
       if (p === PropType.WATCHTOWER) {
         this.watchtowerIndices.push(i);
       }
+      if (p === PropType.TECH_LAB) {
+        this.techLabIndices.push(i);
+      }
+      if (p === PropType.ESCALATOR) {
+        this.escalatorIndices.push(i);
+      }
       const owner = this.propOwner[i];
       if (owner >= 0 && owner < this.nations.length) {
         const ownerNation = this.nations[owner];
@@ -3309,6 +4259,7 @@ export class SimEngine {
         else if (p === PropType.CART_DEPOT) b.depots++;
         else if (p === PropType.WATCHTOWER) b.watchtowers++;
         else if (p === PropType.SPOTLIGHT) b.spotlights++;
+        else if (p === PropType.TECH_LAB) b.techLabs = (b.techLabs ?? 0) + 1;
 
         if (this.isEnterableBuilding(p)) {
           let arr = this.nationBuildingsCache.get(owner);
@@ -3326,7 +4277,7 @@ export class SimEngine {
     const nationCivilians: Unit[][] = this.nations.map(() => []);
 
     for (const u of this.units) {
-      if (u.alive && u.nationId >= 0 && u.nationId < this.nations.length && u.kind === UnitKind.SURVIVOR) {
+      if (u.alive && u.nationId >= 0 && u.nationId < this.nations.length && this.isNationCitizen(u)) {
         const n = this.nations[u.nationId];
         n.population++;
         const j = n.jobs!;
@@ -3615,7 +4566,28 @@ export class SimEngine {
   }
 
   private tickNationsEconomy(): void {
-    const activeSurvivors = this.units.filter((u) => u.alive && u.kind === UnitKind.SURVIVOR).length;
+    const activeSurvivors = this.units.filter((u) => u.alive && this.isNationCitizen(u)).length;
+
+    // Optional autonomous wild Staff Kingdom founding if toggle is enabled
+    if (this.allowWildStaffKingdoms && this.nations.filter((n) => n.alive).length < 12 && Math.random() < 0.08) {
+      const organizer = this.units.find(
+        (u) =>
+          u.alive &&
+          u.nationId === -1 &&
+          (u.kind === UnitKind.STAFF_MANAGER || u.kind === UnitKind.STAFF_WARDEN) &&
+          Math.hypot(u.x - SUMMIT_X, u.y - SUMMIT_Y) > SUMMIT_RADIUS + 6 &&
+          this.territory[Math.max(0, Math.min(GRID_W * GRID_H - 1, (u.y | 0) * GRID_W + (u.x | 0)))] === -1
+      );
+      if (organizer) {
+        let nearbyStaff = 0;
+        this.spatialHash.queryRadius(this.units, organizer.x, organizer.y, 12, (o) => {
+          if (isStaffKind(o.kind) && o.nationId === -1) nearbyStaff++;
+        });
+        if (nearbyStaff >= 3) {
+          this.foundStaffKingdomFromUnit(organizer.id);
+        }
+      }
+    }
 
     for (const n of this.nations) {
       if (!n.alive) continue;
@@ -3635,9 +4607,15 @@ export class SimEngine {
         this.addNews('COLONY', `${n.name} reached Tech Tier 2: ${TECH_TIER_NAMES[2]}!`);
       }
 
-      // Passive Tax, Gov & IKEA Building Production effects
+      // Passive Tax, Gov & IKEA Building Production + Weapons & Civilian Goods Crafting
       const bld = n.buildings;
       const lingonMult = hasTech(n, 'lingonberry_kitchens') ? 1.4 : 1;
+      const bestArm = this.getNationBestWeapon(n, n.id);
+      n.weaponTier = bestArm.tier;
+      n.bestWeapon = bestArm.weapon;
+      if (n.firearms === undefined) n.firearms = 0;
+      if (n.civilianGoods === undefined) n.civilianGoods = 0;
+
       if (bld) {
         // Meatball Bistros cook meatballs & raise happiness
         if (bld.bistros > 0) {
@@ -3653,9 +4631,33 @@ export class SimEngine {
           n.allenWrenches += bld.archives * 0.35;
           n.warExhaustion = Math.max(0, n.warExhaustion - bld.archives * 0.15);
         }
+        // SCP-IKEA Tech Labs accelerate learning, craft wrenches, and salvage scrap
+        if ((bld.techLabs ?? 0) > 0) {
+          const labs = bld.techLabs ?? 0;
+          n.allenWrenches += labs * 0.55;
+          n.scrap += labs * 0.35;
+        }
+        // Weapons & Firearms Manufacturing (Workshops + Tech Labs)
+        if ((bld.workshops > 0 || (bld.techLabs ?? 0) > 0) && bestArm.tier >= 1 && n.scrap >= 1.5) {
+          const armRate =
+            (bestArm.tier >= 3 ? 0.65 : bestArm.tier === 2 ? 0.5 : 0.35) *
+            (1 + Math.min(1.0, ((bld.techLabs ?? 0) + bld.workshops) * 0.2));
+          n.scrap = Math.max(0, n.scrap - 0.18);
+          n.firearms = Math.min(999, (n.firearms || 0) + armRate);
+        }
+        // Civilian Goods Crafting (Blåhaj, Flatpack Furniture, Swede-Brew Espresso, Smart Lamps)
+        if (bld.bistros > 0 || bld.workshops > 0) {
+          const goodsRate = hasTech(n, 'civilian_catalog')
+            ? 0.95 + (bld.bistros + bld.workshops) * 0.18
+            : 0.25 + (bld.bistros + bld.workshops) * 0.06;
+          n.civilianGoods = Math.min(999, (n.civilianGoods || 0) + goodsRate);
+        }
+      }
+      if ((n.civilianGoods || 0) > 0) {
+        n.civilianGoods = Math.max(0, (n.civilianGoods || 0) - 0.16);
       }
 
-      // Research Tree progression driven by Tinkers, Billy Archives, and Government
+      // Research Tree progression driven by Tinkers, Billy Archives, SCP-IKEA Tech Labs, and Anomaly Surge
       if (!n.researchedTechs) n.researchedTechs = [];
       if (!n.activeResearchId || n.researchedTechs.includes(n.activeResearchId)) {
         n.activeResearchId = this.pickBestResearchForNation(n);
@@ -3663,14 +4665,29 @@ export class SimEngine {
       }
       const tinkerCount = n.jobs?.tinkers || 0;
       const archiveCount = bld?.archives || 0;
+      const techLabCount = bld?.techLabs ?? 0;
       const govResBonus =
         n.government === 'Checkout Democracy'
           ? 0.45
           : n.government === 'Merchant Republic'
             ? 0.35
             : 0.2;
-      const masteryMult = hasTech(n, 'blueprint_mastery') ? 1.3 : 1;
-      const rRate = (0.55 + tinkerCount * 0.5 + archiveCount * 0.85 + (n.techTier - 1) * 0.25 + govResBonus) * masteryMult;
+      const surgeBonus = this.activeAnomaly?.type === 'FLUORESCENT_SURGE' ? 0.6 : 0;
+      const learningMult =
+        1 +
+        surgeBonus +
+        (hasTech(n, 'blueprint_mastery') ? 0.3 : 0) +
+        (hasTech(n, 'swedish_schematics') ? 0.35 : 0) +
+        (hasTech(n, 'fluorescent_capacitor') ? 0.35 : 0) +
+        Math.min(0.65, techLabCount * 0.18);
+      const rRate =
+        (0.55 +
+          tinkerCount * 0.55 +
+          archiveCount * 0.85 +
+          techLabCount * 1.35 +
+          (n.techTier - 1) * 0.25 +
+          govResBonus) *
+        learningMult;
       n.researchRate = Number(rRate.toFixed(1));
       if (n.activeResearchId) {
         n.researchPoints = (n.researchPoints || 0) + rRate;
@@ -3717,6 +4734,8 @@ export class SimEngine {
       if (bld && bld.bistros > 0) happyDelta += Math.min(1.2, bld.bistros * 0.35);
       if (bld && bld.archives > 0) happyDelta += Math.min(1.0, bld.archives * 0.3);
       if (hasTech(n, 'lingonberry_kitchens')) happyDelta += 0.45;
+      if ((n.civilianGoods || 0) > 2) happyDelta += hasTech(n, 'civilian_catalog') ? 0.65 : 0.3;
+      if (this.activeAnomaly?.type === 'ESPRESSO_RUSH') happyDelta += 0.7;
       const unionCount = Object.values(n.relations).filter((r) => r.stance === 'UNION').length;
       if (unionCount > 0) happyDelta += Math.min(1.0, unionCount * 0.4);
 
@@ -3814,11 +4833,20 @@ export class SimEngine {
           const role = this.pickNeededJobForNation(n, true);
           const sx = n.capitalX + (Math.random() - 0.5) * 3;
           const sy = n.capitalY + (Math.random() - 0.5) * 3;
-          this.spawnSurvivor(n.id, role, sx, sy);
+          if (n.species === 'staff') {
+            const sk = Math.random() < 0.2 ? UnitKind.STAFF_CRAWLER : Math.random() < 0.35 ? UnitKind.STAFF_WARDEN : UnitKind.STAFF_NORMAL;
+            const spawned = this.spawnStaff(sk, sx, sy);
+            spawned.nationId = n.id;
+            spawned.originNationId = n.id;
+            spawned.name = randomName();
+            this.applyRoleStats(spawned, n, role);
+          } else {
+            this.spawnSurvivor(n.id, role, sx, sy);
+          }
           n.population += 1;
           currentLive += 1;
           birthsThisTick++;
-          this.spawnFloatingText(sx, sy - 1.2, '+1 Citizen', '#4ade80');
+          this.spawnFloatingText(sx, sy - 1.2, n.species === 'staff' ? '+1 Staff' : '+1 Citizen', '#4ade80');
           this.spawnParticleBurst(sx, sy, '#4ade80', 4);
         }
         if (birthsThisTick > 0) {
@@ -3913,7 +4941,7 @@ export class SimEngine {
       let closest: Unit | null = null;
       let bestDist = range * range;
       this.spatialHash.queryRadius(this.units, tx + 0.5, ty + 0.5, range, (u, _idx, dSq) => {
-        const hostileStaff = this.isNight && u.kind >= UnitKind.STAFF_NORMAL;
+        const hostileStaff = this.isNight && isStaffKind(u.kind);
         const hostileNation = u.nationId >= 0 && this.areHostile(n.id, u.nationId);
         if (hostileStaff || hostileNation) {
           if (dSq < bestDist) {
@@ -3966,7 +4994,7 @@ export class SimEngine {
       return;
     }
     const nationUnits = this.units.filter(
-      (u) => u.alive && u.nationId === n.id && u.kind === UnitKind.SURVIVOR && u.role !== SurvivorRole.LEADER
+      (u) => u.alive && u.nationId === n.id && this.isNationCitizen(u) && u.role !== SurvivorRole.LEADER
     );
     if (nationUnits.length < 6) {
       this.triggerPalaceCoup(n);
@@ -4114,14 +5142,44 @@ export class SimEngine {
     let claimed = 0;
     let claimedDeadNation: Nation | undefined;
 
-    // 1. Cast radial probes outward from capital to expand smoothly along borders
-    for (let ray = 0; ray < 8 && claimed < 2; ray++) {
+    const claimRoundedPatch = (cx: number, cy: number, radiusOneOnly: boolean) => {
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (radiusOneOnly && Math.abs(dx) + Math.abs(dy) > 1) continue;
+          const px = cx + dx;
+          const py = cy + dy;
+          if (px < 2 || px >= GRID_W - 2 || py < 2 || py >= GRID_H - 2) continue;
+          if (Math.hypot(px - SUMMIT_X, py - SUMMIT_Y) <= SUMMIT_RADIUS + 1) continue;
+          const pIdx = py * GRID_W + px;
+          const pOwner = this.territory[pIdx];
+          if (pOwner === -1 || (pOwner >= 0 && !this.nations[pOwner]?.alive)) {
+            const deadOwner = pOwner >= 0 ? this.getNation(pOwner) : undefined;
+            this.territory[pIdx] = n.id;
+            if (deadOwner && !deadOwner.alive) {
+              if (this.prop[pIdx] === PropType.CHECKOUT_FLAG) {
+                this.prop[pIdx] = PropType.SPOTLIGHT;
+                this.propHp[pIdx] = 150;
+                this.propMaxHp[pIdx] = 150;
+              }
+              if (this.propOwner[pIdx] === deadOwner.id) {
+                this.propOwner[pIdx] = n.id;
+              }
+              claimedDeadNation = deadOwner;
+            }
+            claimed++;
+          }
+        }
+      }
+    };
+
+    // 1. Cast radial probes outward from capital to advance borders smoothly as rounded patches
+    for (let ray = 0; ray < 8 && claimed < 4; ray++) {
       const a = Math.random() * Math.PI * 2;
       const cosA = Math.cos(a);
       const sinA = Math.sin(a);
       let sawOwn = false;
 
-      for (let r = 1; r <= 56; r++) {
+      for (let r = 1; r <= 62; r++) {
         const tx = Math.round(n.capitalX + cosA * r);
         const ty = Math.round(n.capitalY + sinA * r);
         if (tx < 2 || tx >= GRID_W - 2 || ty < 2 || ty >= GRID_H - 2) break;
@@ -4135,31 +5193,17 @@ export class SimEngine {
         }
         if (owner === -1 || (owner >= 0 && !this.nations[owner]?.alive)) {
           if (sawOwn) {
-            const deadOwner = owner >= 0 ? this.getNation(owner) : undefined;
-            this.territory[idx] = n.id;
-            if (deadOwner && !deadOwner.alive) {
-              if (this.prop[idx] === PropType.CHECKOUT_FLAG) {
-                this.prop[idx] = PropType.SPOTLIGHT;
-                this.propHp[idx] = 150;
-                this.propMaxHp[idx] = 150;
-              }
-              if (this.propOwner[idx] === deadOwner.id) {
-                this.propOwner[idx] = n.id;
-              }
-              claimedDeadNation = deadOwner;
-            }
-            claimed++;
+            claimRoundedPatch(tx, ty, true);
           }
           break;
         }
-        // Living neighbor territory blocks peaceful expansion
         break;
       }
     }
 
-    // 2. Also expand around active citizens (helps detached enclaves or newly founded corners)
+    // 2. Also expand adjacent to existing borders around active citizens (no scattered 1-tile speckles)
     if (claimed === 0) {
-      for (let i = 0; i < this.units.length && claimed < 2; i++) {
+      for (let i = 0; i < this.units.length && claimed < 3; i++) {
         const u = this.units[i];
         if (!u.alive || u.nationId !== n.id || u.kind !== UnitKind.SURVIVOR) continue;
         if (Math.random() > 0.25) continue;
@@ -4170,25 +5214,19 @@ export class SimEngine {
         const idx = gy * GRID_W + gx;
         const owner = this.territory[idx];
         if (owner === -1 || (owner >= 0 && !this.nations[owner]?.alive)) {
-          const deadOwner = owner >= 0 ? this.getNation(owner) : undefined;
-          this.territory[idx] = n.id;
-          if (deadOwner && !deadOwner.alive) {
-            if (this.prop[idx] === PropType.CHECKOUT_FLAG) {
-              this.prop[idx] = PropType.SPOTLIGHT;
-              this.propHp[idx] = 150;
-              this.propMaxHp[idx] = 150;
-            }
-            if (this.propOwner[idx] === deadOwner.id) {
-              this.propOwner[idx] = n.id;
-            }
-            claimedDeadNation = deadOwner;
-          }
-          claimed++;
+          const touchesOwn =
+            this.territory[idx - GRID_W] === n.id ||
+            this.territory[idx + GRID_W] === n.id ||
+            this.territory[idx - 1] === n.id ||
+            this.territory[idx + 1] === n.id;
+          if (!touchesOwn) continue;
+          claimRoundedPatch(gx, gy, true);
         }
       }
     }
 
     if (claimed > 0) {
+      this.smoothTerritoryBorders();
       this.dirtyMap = true;
       this.dirtyLight = true;
       if (claimedDeadNation && Math.random() < 0.2) {
@@ -4303,6 +5341,7 @@ export class SimEngine {
       foundedDay: this.day,
       sabotageCooldown: 5,
       cartCooldown: 6,
+      buildingSpacing: parent.buildingSpacing,
       researchedTechs: [...(parent.researchedTechs || [])],
       activeResearchId: null,
       researchPoints: 0,
@@ -4319,6 +5358,7 @@ export class SimEngine {
         this.setRelation(nid, o.id, o.id === parent.id ? 'ALLIANCE' : 'NEUTRAL');
       }
     }
+    this.smoothTerritoryBorders();
     this.dirtyMap = true;
     this.dirtyLight = true;
     this.forceMapRebuild = true;
@@ -4340,20 +5380,42 @@ export class SimEngine {
   private foundIndependentKingdomFromSettlers(
     settlers: Unit[],
     rawCx: number,
-    rawCy: number
+    rawCy: number,
+    allowNearbyOffset = false
   ): boolean {
     if (settlers.length < 2) return false;
 
-    const cx = Math.max(8, Math.min(GRID_W - 8, rawCx | 0));
-    const cy = Math.max(8, Math.min(GRID_H - 8, rawCy | 0));
+    const minCapDist = allowNearbyOffset ? 7.5 : 9;
+    let cx = Math.max(8, Math.min(GRID_W - 8, rawCx | 0));
+    let cy = Math.max(8, Math.min(GRID_H - 8, rawCy | 0));
 
-    if (Math.hypot(cx - SUMMIT_X, cy - SUMMIT_Y) <= SUMMIT_RADIUS + 4) return false;
-    if (
-      this.nations.some(
-        (n) => n.alive && Math.hypot(n.capitalX - cx, n.capitalY - cy) < 9
-      )
-    ) {
-      return false;
+    const isValidCapSpot = (tx: number, ty: number) => {
+      if (tx < 8 || tx > GRID_W - 8 || ty < 8 || ty > GRID_H - 8) return false;
+      if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 4) return false;
+      if (this.nations.some((n) => n.alive && Math.hypot(n.capitalX - tx, n.capitalY - ty) < minCapDist)) {
+        return false;
+      }
+      const owner = this.territory[ty * GRID_W + tx];
+      return owner < 0 || !this.nations[owner]?.alive;
+    };
+
+    if (!isValidCapSpot(cx, cy)) {
+      if (!allowNearbyOffset) return false;
+      let foundSpot = false;
+      for (let rad = 3; rad <= 11 && !foundSpot; rad += 2) {
+        for (let step = 0; step < 12; step++) {
+          const ang = (step / 12) * Math.PI * 2;
+          const candX = Math.round(cx + Math.cos(ang) * rad);
+          const candY = Math.round(cy + Math.sin(ang) * rad);
+          if (isValidCapSpot(candX, candY)) {
+            cx = candX;
+            cy = candY;
+            foundSpot = true;
+            break;
+          }
+        }
+      }
+      if (!foundSpot) return false;
     }
 
     const usedNames = new Set(this.nations.map((n) => n.name));
@@ -4403,6 +5465,7 @@ export class SimEngine {
     if (this.territory[cy * GRID_W + (cx + 2)] === nid) {
       this.placeNationProp(cx + 2, cy, PropType.SPOTLIGHT, 150, nid);
     }
+    this.smoothTerritoryBorders();
 
     const gov = GOVERNMENTS[nid % GOVERNMENTS.length];
     const ideology = IDEOLOGIES[nid % IDEOLOGIES.length];
@@ -4448,6 +5511,7 @@ export class SimEngine {
       foundedDay: this.day,
       sabotageCooldown: 6,
       cartCooldown: 6,
+      buildingSpacing: (['Crowded', 'Balanced', 'Spaced'] as BuildingSpacing[])[nid % 3],
       researchedTechs: [],
       activeResearchId: null,
       researchPoints: 0,
@@ -4505,7 +5569,7 @@ export class SimEngine {
 
   public replaceLeader(n: Nation, cause: string): void {
     const candidates = this.units.filter(
-      (u) => u.alive && u.nationId === n.id && u.kind === UnitKind.SURVIVOR
+      (u) => u.alive && u.nationId === n.id && this.isNationCitizen(u)
     );
     if (candidates.length === 0) {
       // Never spawn a zombie leader out of thin air when no living citizens remain
@@ -4514,10 +5578,8 @@ export class SimEngine {
     }
 
     const chosen = candidates[(Math.random() * candidates.length) | 0];
-    chosen.role = SurvivorRole.LEADER;
-    chosen.maxHp = 140;
-    chosen.hp = 140;
-    chosen.atk = 14;
+    this.applyRoleStats(chosen, n, SurvivorRole.LEADER);
+    chosen.hp = chosen.maxHp;
 
     let method = 'Council Selection';
     if (n.government === 'Checkout Democracy') method = 'Checkout Election';
@@ -4540,6 +5602,291 @@ export class SimEngine {
     this.addNews('POLITICS', `${cause}: ${chosen.name} crowned in ${n.name} via ${method}!`);
   }
 
+  public foundStaffKingdomFromUnit(unitId: number): { ok: boolean; nation?: Nation; error?: string } {
+    const founder = this.units.find((u) => u.id === unitId && u.alive);
+    if (!founder || !isStaffKind(founder.kind)) {
+      return { ok: false, error: 'Selected entity is not an SCP-3008-2 Staff unit.' };
+    }
+    if (founder.nationId >= 0) {
+      return { ok: false, error: 'This Staff unit already belongs to a realm!' };
+    }
+
+    let cx = Math.max(8, Math.min(GRID_W - 8, founder.x | 0));
+    let cy = Math.max(8, Math.min(GRID_H - 8, founder.y | 0));
+    const isSpotClear = (tx: number, ty: number) => {
+      if (tx < 8 || tx > GRID_W - 8 || ty < 8 || ty > GRID_H - 8) return false;
+      if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 4) return false;
+      if (this.nations.some((n) => n.alive && Math.hypot(n.capitalX - tx, n.capitalY - ty) < 8)) return false;
+      const owner = this.territory[ty * GRID_W + tx];
+      return owner < 0 || !this.nations[owner]?.alive;
+    };
+
+    if (!isSpotClear(cx, cy)) {
+      let found = false;
+      for (let rad = 3; rad <= 16 && !found; rad += 2) {
+        for (let step = 0; step < 12; step++) {
+          const ang = (step / 12) * Math.PI * 2;
+          const candX = Math.round(cx + Math.cos(ang) * rad);
+          const candY = Math.round(cy + Math.sin(ang) * rad);
+          if (isSpotClear(candX, candY)) {
+            cx = candX;
+            cy = candY;
+            found = true;
+            break;
+          }
+        }
+      }
+      if (!found) {
+        return { ok: false, error: 'Too close to existing capitals or Summit Lounge.' };
+      }
+    }
+
+    const usedNames = new Set(this.nations.map((n) => n.name));
+    const unusedPal = NATION_PALETTE.filter((p) => !this.nations.some((n) => n.alive && n.color === p.color));
+    const pal = unusedPal[0] ?? {
+      name: 'Staff Syndicate',
+      color: '#eab308',
+      border: '#a16207',
+      rgb: [234, 179, 8] as [number, number, number],
+      borderRgb: [161, 98, 7] as [number, number, number],
+    };
+    const pickedName =
+      STAFF_KINGDOM_NAMES.find((n) => !usedNames.has(n)) ??
+      `Staff Conclave ${this.nextNationId + 1}`;
+    const nid = this.nextNationId++;
+
+    let claimedTiles = 0;
+    for (let dy = -4; dy <= 4; dy++) {
+      for (let dx = -4; dx <= 4; dx++) {
+        if (dx * dx + dy * dy > 18) continue;
+        const tx = cx + dx;
+        const ty = cy + dy;
+        if (tx <= 1 || tx >= GRID_W - 1 || ty <= 1 || ty >= GRID_H - 1) continue;
+        if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 1) continue;
+        const idx = ty * GRID_W + tx;
+        const owner = this.territory[idx];
+        if (owner >= 0 && this.nations[owner]?.alive) continue;
+        if (Math.abs(dx) <= 1 && Math.abs(dy) <= 1) {
+          this.prop[idx] = PropType.NONE;
+          this.propOwner[idx] = -1;
+        }
+        this.territory[idx] = nid;
+        claimedTiles++;
+      }
+    }
+
+    if (claimedTiles < 6) {
+      for (let i = 0; i < this.territory.length; i++) {
+        if (this.territory[i] === nid) this.territory[i] = -1;
+      }
+      this.nextNationId--;
+      return { ok: false, error: 'Insufficient open floor space to claim a Staff Kingdom.' };
+    }
+
+    this.placeNationProp(cx, cy, PropType.CHECKOUT_FLAG, 380, nid);
+    this.territory[cy * GRID_W + cx] = nid;
+    if (this.territory[cy * GRID_W + (cx + 2)] === nid) {
+      this.placeNationProp(cx + 2, cy, PropType.SPOTLIGHT, 160, nid);
+    }
+    this.smoothTerritoryBorders();
+
+    const recruits: Unit[] = [founder];
+    this.spatialHash.queryRadius(this.units, founder.x, founder.y, 14, (other) => {
+      if (recruits.length < 10 && other.id !== founder.id && other.alive && isStaffKind(other.kind) && other.nationId === -1) {
+        recruits.push(other);
+      }
+    });
+    while (recruits.length < 5) {
+      const att = this.spawnStaff(
+        recruits.length === 1 ? UnitKind.STAFF_WARDEN : UnitKind.STAFF_NORMAL,
+        cx + (Math.random() - 0.5) * 3,
+        cy + (Math.random() - 0.5) * 3
+      );
+      recruits.push(att);
+    }
+
+    const gov = GOVERNMENTS[nid % GOVERNMENTS.length];
+    const ideology = IDEOLOGIES[nid % IDEOLOGIES.length];
+    founder.name = `Director ${randomName().split(' ')[0]}`;
+    founder.age = 34;
+    if (!founder.traits.includes('Tough')) founder.traits.push('Tough');
+
+    const staffNation: Nation = {
+      id: nid,
+      name: pickedName,
+      species: 'staff',
+      color: pal.color,
+      borderColor: pal.border,
+      capitalX: cx,
+      capitalY: cy,
+      meatballs: 36,
+      scrap: 38,
+      allenWrenches: 22,
+      firearms: 4,
+      civilianGoods: 6,
+      techTier: 1,
+      population: recruits.length,
+      housingCap: 20,
+      territoryTiles: claimedTiles,
+      ideology,
+      government: gov,
+      taxRate: 'Normal',
+      happiness: 84,
+      lowHappinessTimer: 0,
+      warExhaustion: 0,
+      threatScore: 0,
+      overlordId: null,
+      vassalIds: [],
+      loyalty: 100,
+      leader: {
+        unitId: founder.id,
+        name: founder.name,
+        age: founder.age,
+        traits: [...founder.traits],
+        alive: true,
+        crownedDay: this.day,
+        kills: founder.kills,
+      },
+      recentCoupDay: -10,
+      isRebel: false,
+      lastQuote: `The store is ours! ${pickedName} welcomes disciplined Staff and trade!`,
+      relations: {},
+      alive: true,
+      foundedDay: this.day,
+      sabotageCooldown: 6,
+      cartCooldown: 6,
+      buildingSpacing: 'Balanced',
+      researchedTechs: [],
+      activeResearchId: null,
+      researchPoints: 0,
+      researchRate: 0,
+      reproductionProgress: 0,
+      reproductionRate: 0,
+    };
+
+    const staffRoles: SurvivorRole[] = [
+      SurvivorRole.SCAVENGER,
+      SurvivorRole.BUILDER,
+      SurvivorRole.GUARD,
+      SurvivorRole.TINKER,
+      SurvivorRole.CHEF,
+      SurvivorRole.TRADER,
+    ];
+    for (let i = 0; i < recruits.length; i++) {
+      const r = recruits[i];
+      r.nationId = nid;
+      r.originNationId = nid;
+      r.pacified = true;
+      r.hasTarget = false;
+      if (i > 0 && r.name.startsWith('SCP-3008-2')) {
+        r.name = `Staff ${randomName().split(' ')[0]}`;
+      }
+      const role = i === 0 ? SurvivorRole.LEADER : staffRoles[(i - 1) % staffRoles.length];
+      this.applyRoleStats(r, staffNation, role);
+    }
+
+    this.nations.push(staffNation);
+    for (const o of this.nations) {
+      if (o.id !== nid) this.setRelation(nid, o.id, 'NEUTRAL');
+    }
+
+    this.dirtyMap = true;
+    this.dirtyLight = true;
+    this.forceMapRebuild = true;
+    this.forceLightRebuild = true;
+    this.recountTerritoryAndHousing();
+    this.addNews('FOUNDING', `STAFF REALM CHARTERED: ${pickedName} (${gov}) organized by ${founder.name}!`);
+    this.addChronicle(
+      'FOUNDING',
+      `${pickedName} Staff Kingdom`,
+      `SCP-3008-2 Staff founded ${pickedName} on Day ${this.day} under ${founder.name}.`,
+      pal.color
+    );
+    this.spawnFloatingText(cx + 0.5, cy - 1.5, `STAFF REALM: ${pickedName.toUpperCase()}!`, pal.color);
+    this.spawnParticleBurst(cx + 0.5, cy + 0.5, pal.color, 20);
+    soundFX.playPower();
+    return { ok: true, nation: staffNation };
+  }
+
+  public giveUnitGift(
+    unitId: number,
+    action:
+      | 'bless'
+      | 'rifle'
+      | 'plasma'
+      | 'pacify'
+      | 'promote_warden'
+      | 'promote_manager'
+      | 'charter_human'
+      | 'charter_staff'
+  ): { ok: boolean; message: string } {
+    const u = this.units.find((cand) => cand.id === unitId && cand.alive);
+    if (!u) return { ok: false, message: 'Unit is no longer alive.' };
+
+    if (action === 'charter_staff') {
+      const res = this.foundStaffKingdomFromUnit(unitId);
+      return { ok: res.ok, message: res.ok ? `Founded ${res.nation?.name}!` : res.error || 'Could not found realm.' };
+    }
+    if (action === 'charter_human') {
+      if (u.kind !== UnitKind.SURVIVOR || u.nationId >= 0) {
+        return { ok: false, message: 'Only unclaimed Survivors can charter a new Human Kingdom.' };
+      }
+      const group: Unit[] = [u];
+      this.spatialHash.queryRadius(this.units, u.x, u.y, 12, (o) => {
+        if (group.length < 6 && o.id !== u.id && o.alive && o.kind === UnitKind.SURVIVOR && o.nationId === -1) {
+          group.push(o);
+        }
+      });
+      while (group.length < 4) {
+        group.push(
+          this.spawnSurvivor(-1, SurvivorRole.SCAVENGER, u.x + (Math.random() - 0.5) * 2.5, u.y + (Math.random() - 0.5) * 2.5)
+        );
+      }
+      const ok = this.foundIndependentKingdomFromSettlers(group, u.x, u.y, true);
+      return { ok, message: ok ? 'Chartered new Human Kingdom!' : 'Spot too crowded to found kingdom here.' };
+    }
+    if (action === 'pacify') {
+      u.pacified = !u.pacified;
+      u.hasTarget = false;
+      this.spawnParticleBurst(u.x, u.y, u.pacified ? '#34d399' : '#ef4444', 8);
+      this.spawnFloatingText(u.x, u.y - 1, u.pacified ? 'TAMED STAFF!' : 'FERAL!', u.pacified ? '#34d399' : '#ef4444');
+      return { ok: true, message: u.pacified ? 'Staff entity tamed & pacified!' : 'Staff entity returned to feral.' };
+    }
+    if (action === 'promote_warden' || action === 'promote_manager') {
+      if (!isStaffKind(u.kind)) return { ok: false, message: 'Only Staff can be mutated.' };
+      u.kind = action === 'promote_manager' ? UnitKind.STAFF_MANAGER : UnitKind.STAFF_WARDEN;
+      const bonusHp = action === 'promote_manager' ? 320 : 140;
+      u.maxHp = Math.max(u.maxHp, bonusHp);
+      u.hp = u.maxHp;
+      u.atk += action === 'promote_manager' ? 12 : 6;
+      if (u.nationId === -1) {
+        u.name = action === 'promote_manager' ? 'SCP-3008-2 Manager Brute' : 'SCP-3008-2 Aisle Warden';
+      }
+      this.spawnParticleBurst(u.x, u.y, '#fbbf24', 12);
+      this.spawnFloatingText(u.x, u.y - 1.2, action === 'promote_manager' ? 'PROMOTED: MANAGER!' : 'PROMOTED: WARDEN!', '#fbbf24');
+      return { ok: true, message: `Evolved into ${u.name}!` };
+    }
+    if (action === 'rifle' || action === 'plasma') {
+      const w: WeaponType = action === 'plasma' ? 'plasma_stapler' : 'halogen_rifle';
+      u.weapon = w;
+      u.atk += action === 'plasma' ? 11 : 8;
+      u.heroRelic = action === 'plasma' ? 'Arc Plasma Stapler' : 'Halogen Beam Rifle';
+      this.spawnParticleBurst(u.x, u.y, '#22d3ee', 10);
+      this.spawnFloatingText(u.x, u.y - 1.2, action === 'plasma' ? '⚡ PLASMA STAPLER!' : '🔫 HALOGEN RIFLE!', '#22d3ee');
+      return { ok: true, message: `Equipped ${u.heroRelic}!` };
+    }
+    // Bless
+    if (!u.traits.includes('Blessed')) u.traits.push('Blessed');
+    u.maxHp += 50;
+    u.hp = u.maxHp;
+    u.atk += 7;
+    u.heroRelic = u.heroRelic || 'Fluorescent Halo';
+    this.spawnParticleBurst(u.x, u.y, '#38bdf8', 12);
+    this.spawnFloatingText(u.x, u.y - 1.2, '★ DIVINE BLESSING!', '#38bdf8');
+    soundFX.playPower();
+    return { ok: true, message: `${u.name} received a Divine Blessing!` };
+  }
+
   // ==================== SPAWNERS ====================
 
   public spawnSurvivor(
@@ -4559,6 +5906,11 @@ export class SimEngine {
     const baseHp = (isLeader ? 140 : isGeneral ? 135 : isGuard ? 95 : 70) + tierHpBonus + govHpBonus;
     const maxHp = traits.includes('Tough') ? Math.round(baseHp * 1.35) : baseHp;
     const speed = traits.includes('Speedy') ? 5.6 : 4.3;
+
+    const bestSpawnWeapon =
+      n && (isGuard || isGeneral || isLeader || role === SurvivorRole.TINKER)
+        ? this.getNationBestWeapon(n, this.nextUnitId).weapon
+        : ('none' as WeaponType);
 
     const u: Unit = {
       id: this.nextUnitId++,
@@ -4594,6 +5946,7 @@ export class SimEngine {
       aiTimer: Math.random() * 0.3,
       chatEmoji: '',
       chatTimer: 0,
+      weapon: bestSpawnWeapon !== 'none' ? bestSpawnWeapon : undefined,
       alive: true,
     };
     this.units.push(u);
@@ -4618,6 +5971,12 @@ export class SimEngine {
     const tx = customDest ? customDest.x : endDepot ? endDepot.x + 0.5 : dest.capitalX + 0.5;
     const ty = customDest ? customDest.y : endDepot ? endDepot.y + 0.9 : dest.capitalY + 0.5;
 
+    const routeWaypoints =
+      !customDest && origin.id !== dest.id
+        ? [...this.buildTradeWaypoints(origin, dest).slice(1, -1), { x: tx, y: ty }]
+        : undefined;
+    const firstTarget = routeWaypoints && routeWaypoints.length > 0 ? routeWaypoints[0] : { x: tx, y: ty };
+
     const u: Unit = {
       id: this.nextUnitId++,
       kind: UnitKind.CART_RUNNER,
@@ -4640,8 +5999,9 @@ export class SimEngine {
       carryAmount: 12,
       targetNationId: dest.id,
       originNationId: origin.id,
-      targetX: tx,
-      targetY: ty,
+      targetX: firstTarget.x,
+      targetY: firstTarget.y,
+      routeWaypoints,
       hasTarget: true,
       stuckTimer: 0,
       lastCheckX: sx,
@@ -4742,11 +6102,51 @@ export class SimEngine {
     return u;
   }
 
-  public spawnStaff(kind: UnitKind.STAFF_NORMAL | UnitKind.STAFF_CRAWLER | UnitKind.STAFF_MANAGER, x: number, y: number): Unit {
+  public spawnStaff(
+    kind:
+      | UnitKind.STAFF_NORMAL
+      | UnitKind.STAFF_CRAWLER
+      | UnitKind.STAFF_MANAGER
+      | UnitKind.STAFF_WARDEN
+      | UnitKind.STAFF_STALKER
+      | UnitKind.STAFF_ANNOUNCER,
+    x: number,
+    y: number
+  ): Unit {
     const hpScale = 1 + (this.day - 1) * 0.12;
-    const isMgr = kind === UnitKind.STAFF_MANAGER;
-    const isCrw = kind === UnitKind.STAFF_CRAWLER;
-    const maxHp = Math.round((isMgr ? 420 : isCrw ? 65 : 105) * hpScale);
+    let baseHp = 105;
+    let atk = 14;
+    let speed = 4.6;
+    let name = 'SCP-3008-2 Staff';
+
+    if (kind === UnitKind.STAFF_MANAGER) {
+      baseHp = 420;
+      atk = 26;
+      speed = 3.5;
+      name = 'SCP-3008-2 Manager Brute';
+    } else if (kind === UnitKind.STAFF_CRAWLER) {
+      baseHp = 65;
+      atk = 10;
+      speed = 6.4;
+      name = 'SCP-3008-2 Crawler';
+    } else if (kind === UnitKind.STAFF_WARDEN) {
+      baseHp = 210;
+      atk = 19;
+      speed = 3.9;
+      name = 'SCP-3008-2 Aisle Warden';
+    } else if (kind === UnitKind.STAFF_STALKER) {
+      baseHp = 85;
+      atk = 17;
+      speed = 6.8;
+      name = 'SCP-3008-2 Blackout Stalker';
+    } else if (kind === UnitKind.STAFF_ANNOUNCER) {
+      baseHp = 135;
+      atk = 13;
+      speed = 4.5;
+      name = 'SCP-3008-2 PA Hound';
+    }
+
+    const maxHp = Math.round(baseHp * hpScale);
     const u: Unit = {
       id: this.nextUnitId++,
       kind,
@@ -4758,9 +6158,9 @@ export class SimEngine {
       vy: 0,
       hp: maxHp,
       maxHp,
-      atk: isMgr ? 26 : isCrw ? 10 : 14,
-      speed: isMgr ? 3.5 : isCrw ? 6.4 : 4.6,
-      name: isMgr ? 'SCP-3008-2 Manager Brute' : isCrw ? 'SCP-3008-2 Crawler' : 'SCP-3008-2 Staff',
+      atk,
+      speed,
+      name,
       age: 0,
       kills: 0,
       hunger: 0,
@@ -4787,8 +6187,186 @@ export class SimEngine {
     return u;
   }
 
+  public triggerStoreAnomaly(forcedType?: StoreAnomalyType): ActiveAnomaly {
+    const types: StoreAnomalyType[] = [
+      'FLUORESCENT_SURGE',
+      'AISLE_FOG',
+      'CLEARANCE_STAMPEDE',
+      'ESPRESSO_RUSH',
+    ];
+    const picked = forcedType ?? types[(Math.random() * types.length) | 0];
+    const defs: Record<StoreAnomalyType, Omit<ActiveAnomaly, 'type'>> = {
+      FLUORESCENT_SURGE: {
+        label: 'Fluorescent Surge',
+        description: '+60% Tech Lab & Archive research speed across all kingdoms.',
+        remainingSec: 36,
+        color: '#38bdf8',
+      },
+      AISLE_FOG: {
+        label: 'Showroom Mist',
+        description: 'Eerie fluorescent fog fills the aisles; Staff move +15% faster.',
+        remainingSec: 32,
+        color: '#94a3b8',
+      },
+      CLEARANCE_STAMPEDE: {
+        label: 'Clearance Stampede',
+        description: 'Fresh Meatball Vats & Pallets dropped across neutral aisles + +22% unit speed.',
+        remainingSec: 30,
+        color: '#ffda1a',
+      },
+      ESPRESSO_RUSH: {
+        label: 'Swede-Brew Espresso Rush',
+        description: '+32% citizen move speed & steady morale boost storewide!',
+        remainingSec: 32,
+        color: '#fbbf24',
+      },
+    };
+    const meta = defs[picked];
+    this.activeAnomaly = { type: picked, ...meta };
+
+    if (picked === 'CLEARANCE_STAMPEDE') {
+      let dropped = 0;
+      for (let attempt = 0; attempt < 90 && dropped < 22; attempt++) {
+        const tx = 8 + ((Math.random() * (GRID_W - 16)) | 0);
+        const ty = 8 + ((Math.random() * (GRID_H - 16)) | 0);
+        if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 4) continue;
+        const idx = ty * GRID_W + tx;
+        if (this.territory[idx] === -1 && this.prop[idx] === PropType.NONE) {
+          const vat = Math.random() < 0.5;
+          this.prop[idx] = vat ? PropType.MEATBALL_VAT : PropType.WOOD_PALLET;
+          this.propHp[idx] = vat ? 120 : 80;
+          this.propMaxHp[idx] = vat ? 120 : 80;
+          this.propOwner[idx] = -1;
+          dropped++;
+        }
+      }
+    }
+
+    this.addNews('STAFF', `STORE ANOMALY: ${meta.label} — ${meta.description}`);
+    this.addChronicle('AUDIT', `Anomaly: ${meta.label}`, meta.description, meta.color);
+    soundFX.playPower();
+    return this.activeAnomaly;
+  }
+
+  private tickAmbientCaravansAndMercs(): void {
+    if (this.units.length >= this.maxPopulation + 100) return;
+    const aliveNations = this.nations.filter((n) => n.alive);
+    if (aliveNations.length === 0) return;
+    let caravans = 0;
+    let mercs = 0;
+    for (const u of this.units) {
+      if (!u.alive) continue;
+      if (u.isCaravan) caravans++;
+      if (u.isMercenary) mercs++;
+    }
+    if (caravans < 3 && !this.isNight) {
+      const n = aliveNations[(Math.random() * aliveNations.length) | 0];
+      const angle = Math.random() * Math.PI * 2;
+      const sx = Math.max(6, Math.min(GRID_W - 6, n.capitalX + Math.cos(angle) * 18));
+      const sy = Math.max(6, Math.min(GRID_H - 6, n.capitalY + Math.sin(angle) * 18));
+      this.spawnCaravan(sx, sy);
+    }
+    if (mercs < 4) {
+      const tx = 14 + ((Math.random() * (GRID_W - 28)) | 0);
+      const ty = 14 + ((Math.random() * (GRID_H - 28)) | 0);
+      if (Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) > SUMMIT_RADIUS + 6) {
+        this.spawnMercenary(tx + 0.5, ty + 0.5);
+      }
+    }
+  }
+
+  public spawnCaravan(x: number, y: number): Unit {
+    const aliveNations = this.nations.filter((n) => n.alive);
+    const dest = aliveNations.length > 0 ? aliveNations[(Math.random() * aliveNations.length) | 0] : undefined;
+    const u: Unit = {
+      id: this.nextUnitId++,
+      kind: UnitKind.CART_RUNNER,
+      role: SurvivorRole.TRADER,
+      nationId: -1,
+      x: Math.max(2, Math.min(GRID_W - 2, x)),
+      y: Math.max(2, Math.min(GRID_H - 2, y)),
+      vx: 0,
+      vy: 0,
+      hp: 150,
+      maxHp: 150,
+      atk: 8,
+      speed: 4.8,
+      name: `Wandering Caravan ${randomName().split(' ')[0]}`,
+      age: 32,
+      kills: 0,
+      hunger: 0,
+      traits: ['Speedy', 'Hoarder'],
+      carryType: 'wrench',
+      carryAmount: 18,
+      targetNationId: dest ? dest.id : -1,
+      originNationId: -1,
+      targetX: dest ? dest.capitalX + 0.5 : x,
+      targetY: dest ? dest.capitalY + 0.5 : y,
+      hasTarget: Boolean(dest),
+      stuckTimer: 0,
+      lastCheckX: x,
+      lastCheckY: y,
+      attackCooldown: 0,
+      hitFlash: 0,
+      feverTimer: 0,
+      aiTimer: 0,
+      chatEmoji: '🐫',
+      chatTimer: 2.5,
+      isCaravan: true,
+      alive: true,
+    };
+    this.units.push(u);
+    this.spawnFloatingText(x, y - 1, 'TRADE CARAVAN!', '#fbbf24');
+    return u;
+  }
+
+  public spawnMercenary(x: number, y: number): Unit {
+    const u: Unit = {
+      id: this.nextUnitId++,
+      kind: UnitKind.SURVIVOR,
+      role: SurvivorRole.GUARD,
+      nationId: -1,
+      x: Math.max(2, Math.min(GRID_W - 2, x)),
+      y: Math.max(2, Math.min(GRID_H - 2, y)),
+      vx: 0,
+      vy: 0,
+      hp: 155,
+      maxHp: 155,
+      atk: 17,
+      speed: 5.0,
+      name: `Merc. ${randomName()}`,
+      age: 29,
+      kills: 0,
+      hunger: 0,
+      traits: ['Brave', 'Tough'],
+      carryType: 'none',
+      carryAmount: 0,
+      targetNationId: -1,
+      originNationId: -1,
+      targetX: x,
+      targetY: y,
+      hasTarget: false,
+      stuckTimer: 0,
+      lastCheckX: x,
+      lastCheckY: y,
+      attackCooldown: 0,
+      hitFlash: 0,
+      feverTimer: 0,
+      aiTimer: 0,
+      chatEmoji: '🗡️',
+      chatTimer: 2.2,
+      weapon: 'nailgun',
+      veteranTitle: 'Free-Aisle Mercenary',
+      isMercenary: true,
+      alive: true,
+    };
+    this.units.push(u);
+    this.spawnFloatingText(x, y - 1, 'MERCENARY HIREABLE!', '#a855f7');
+    return u;
+  }
+
   private spawnNightStaffWave(): void {
-    const staffCount = this.units.filter((u) => u.alive && u.kind >= UnitKind.STAFF_NORMAL && u.kind <= UnitKind.STAFF_MANAGER).length;
+    const staffCount = this.units.filter((u) => u.alive && isStaffKind(u.kind) && u.nationId === -1).length;
     const maxStaff = Math.min(180 + this.day * 28, (this.maxPopulation * 0.25) | 0);
     if (staffCount >= maxStaff) return;
 
@@ -4799,12 +6377,19 @@ export class SimEngine {
       const idx = ty * GRID_W + tx;
       if (this.lightMap[idx] === 0 && this.prop[idx] === PropType.NONE) {
         const roll = Math.random();
-        const kind =
-          this.day >= 3 && roll < 0.06
-            ? UnitKind.STAFF_MANAGER
-            : roll < 0.34
-              ? UnitKind.STAFF_CRAWLER
-              : UnitKind.STAFF_NORMAL;
+        let kind:
+          | UnitKind.STAFF_NORMAL
+          | UnitKind.STAFF_CRAWLER
+          | UnitKind.STAFF_MANAGER
+          | UnitKind.STAFF_WARDEN
+          | UnitKind.STAFF_STALKER
+          | UnitKind.STAFF_ANNOUNCER = UnitKind.STAFF_NORMAL;
+        if (this.day >= 4 && roll < 0.06) kind = UnitKind.STAFF_ANNOUNCER;
+        else if (this.day >= 3 && roll < 0.12) kind = UnitKind.STAFF_MANAGER;
+        else if (this.day >= 3 && roll < 0.22) kind = UnitKind.STAFF_STALKER;
+        else if (this.day >= 2 && roll < 0.34) kind = UnitKind.STAFF_WARDEN;
+        else if (roll < 0.54) kind = UnitKind.STAFF_CRAWLER;
+
         this.spawnStaff(kind, tx + 0.5, ty + 0.5);
         if (Math.random() < 0.22) {
           this.spawnFloatingText(tx, ty - 1, 'The store is closed', '#fde047');
@@ -4821,6 +6406,7 @@ export class SimEngine {
     if (u.attackCooldown > 0) u.attackCooldown = Math.max(0, u.attackCooldown - dt);
     if (u.feverTimer > 0) u.feverTimer = Math.max(0, u.feverTimer - dt);
     if ((u.visitCooldown ?? 0) > 0) u.visitCooldown = Math.max(0, (u.visitCooldown ?? 0) - dt);
+    if ((u.teleportCooldown ?? 0) > 0) u.teleportCooldown = Math.max(0, (u.teleportCooldown ?? 0) - dt);
     if (u.chatTimer > 0) {
       u.chatTimer = Math.max(0, u.chatTimer - dt);
       if (u.chatTimer === 0) u.chatEmoji = '';
@@ -4891,6 +6477,17 @@ export class SimEngine {
             }
             u.chatEmoji = '📖';
             u.chatTimer = 1.8;
+          } else if (propType === PropType.TECH_LAB) {
+            if (nation) {
+              const schemMult = hasTech(nation, 'swedish_schematics') ? 1.4 : 1.0;
+              nation.allenWrenches += 2.2 * schemMult;
+              nation.scrap += 2.0 * schemMult;
+              if (nation.activeResearchId) {
+                nation.researchPoints = (nation.researchPoints || 0) + 3.0 * schemMult;
+              }
+            }
+            u.chatEmoji = '🔬';
+            u.chatTimer = 1.8;
           } else if (propType === PropType.CART_DEPOT) {
             if (nation) {
               nation.allenWrenches += 2.0;
@@ -4913,8 +6510,8 @@ export class SimEngine {
       }
     }
 
-    // Hunger & Food consumption for survivors
-    if (u.kind === UnitKind.SURVIVOR) {
+    // Hunger & Food consumption for nation citizens (human & Staff citizens)
+    if (this.isNationCitizen(u)) {
       u.hunger = Math.min(100, u.hunger + dt * 0.7);
       if (u.hunger > 55 && u.nationId >= 0) {
         const n = this.getNation(u.nationId);
@@ -4935,6 +6532,79 @@ export class SimEngine {
       }
     }
 
+    // Maintenance Escalator / Underground Tunnel fast-travel
+    if (
+      this.escalatorIndices.length >= 2 &&
+      (u.teleportCooldown ?? 0) <= 0 &&
+      u.hasTarget &&
+      (u.kind === UnitKind.CART_RUNNER || this.isNationCitizen(u))
+    ) {
+      const distToTarget = Math.hypot(u.x - u.targetX, u.y - u.targetY);
+      if (distToTarget > 16) {
+        const uxTile = Math.max(1, Math.min(GRID_W - 2, u.x | 0));
+        const uyTile = Math.max(1, Math.min(GRID_H - 2, u.y | 0));
+        let standingEscalator = -1;
+        for (let dy = -1; dy <= 1 && standingEscalator < 0; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const cIdx = (uyTile + dy) * GRID_W + (uxTile + dx);
+            if (this.prop[cIdx] === PropType.ESCALATOR) {
+              const eOwner = this.propOwner[cIdx];
+              if (eOwner === -1 || (u.nationId >= 0 && this.areFriendly(u.nationId, eOwner))) {
+                standingEscalator = cIdx;
+                break;
+              }
+            }
+          }
+        }
+        if (standingEscalator >= 0) {
+          let bestDest = -1;
+          let bestDestDist = distToTarget - 12;
+          for (let ei = 0; ei < this.escalatorIndices.length; ei++) {
+            const dIdx = this.escalatorIndices[ei];
+            if (dIdx === standingEscalator || this.prop[dIdx] !== PropType.ESCALATOR) continue;
+            const dOwner = this.propOwner[dIdx];
+            if (dOwner !== -1 && (u.nationId < 0 || !this.areFriendly(u.nationId, dOwner))) continue;
+            const ex = dIdx % GRID_W + 0.5;
+            const ey = ((dIdx / GRID_W) | 0) + 0.5;
+            const dToTarget = Math.hypot(ex - u.targetX, ey - u.targetY);
+            if (dToTarget < bestDestDist) {
+              bestDestDist = dToTarget;
+              bestDest = dIdx;
+            }
+          }
+          if (bestDest >= 0) {
+            const destX = (bestDest % GRID_W) + 0.5;
+            const destY = ((bestDest / GRID_W) | 0) + 0.5;
+            this.spawnParticleBurst(u.x, u.y, '#22d3ee', 4);
+            u.x = destX;
+            u.y = destY;
+            u.lastCheckX = destX;
+            u.lastCheckY = destY;
+            u.teleportCooldown = 6.5;
+            this.spawnParticleBurst(destX, destY, '#22d3ee', 5);
+            if (this.isNearCamera(destX, destY)) {
+              soundFX.playEscalator();
+            }
+            if (Math.random() < 0.35) {
+              this.spawnFloatingText(destX, destY - 1, '⇅ ESCALATOR', '#22d3ee');
+            }
+          }
+        }
+      }
+    }
+
+    // Wandering Neutral Trade Caravan AI
+    if (u.isCaravan) {
+      this.updateNeutralCaravan(u, dt);
+      return;
+    }
+
+    // Free-Aisle Mercenary AI
+    if (u.isMercenary) {
+      this.updateMercenaryUnit(u, dt);
+      return;
+    }
+
     // Trade Cart Runner AI
     if (u.kind === UnitKind.CART_RUNNER) {
       this.updateCartRunner(u, dt);
@@ -4947,13 +6617,13 @@ export class SimEngine {
       return;
     }
 
-    // Staff AI
-    if (u.kind >= UnitKind.STAFF_NORMAL && u.kind <= UnitKind.STAFF_MANAGER) {
+    // Feral Staff AI (Staff Kingdom citizens fall through to citizen behavior!)
+    if (isStaffKind(u.kind) && (u.nationId < 0 || !this.getNation(u.nationId)?.alive)) {
       this.updateStaffUnit(u, dt);
       return;
     }
 
-    // Survivor AI
+    // Citizen / Survivor AI (Human & Staff Kingdom citizens)
     this.updateSurvivorUnit(u, dt);
   }
 
@@ -5028,7 +6698,7 @@ export class SimEngine {
 
       // Ram hostile guards in melee range
       this.spatialHash.queryRadius(this.units, u.x, u.y, 1.9, (other) => {
-        if (other.kind === UnitKind.SURVIVOR && other.nationId >= 0 && this.areHostile(origin.id, other.nationId)) {
+        if (this.isNationCitizen(other) && this.areHostile(origin.id, other.nationId)) {
           if (u.attackCooldown <= 0) {
             u.attackCooldown = 0.75;
             this.damageUnit(other, u.atk, u);
@@ -5045,6 +6715,7 @@ export class SimEngine {
     ) {
       // Return home if embargoed
       u.targetNationId = origin.id;
+      u.routeWaypoints = undefined;
       u.targetX = origin.capitalX + 0.5;
       u.targetY = origin.capitalY + 0.5;
     }
@@ -5064,7 +6735,7 @@ export class SimEngine {
     let ambushed = false;
     this.spatialHash.queryRadius(this.units, u.x, u.y, 2.2, (other) => {
       if (ambushed) return;
-      if (other.kind === UnitKind.SURVIVOR && other.nationId >= 0 && this.areHostile(other.nationId, u.nationId)) {
+      if (this.isNationCitizen(other) && this.areHostile(other.nationId, u.nationId)) {
         if (u.attackCooldown <= 0) {
           u.hp -= 18;
           u.hitFlash = 0.15;
@@ -5088,20 +6759,28 @@ export class SimEngine {
     if (!u.alive) return;
 
     if (Math.hypot(u.x - u.targetX, u.y - u.targetY) < 2.2) {
+      // Advance to next detour waypoint before final delivery if any remain
+      if (u.routeWaypoints && u.routeWaypoints.length > 1) {
+        u.routeWaypoints.shift();
+        u.targetX = u.routeWaypoints[0].x;
+        u.targetY = u.routeWaypoints[0].y;
+        return;
+      }
       // Arrived at destination capital or united city hub!
       const isUnionTrade = origin.id === dest.id || this.getStance(origin.id, dest.id) === 'UNION';
       const isMerchant = origin.government === 'Merchant Republic' || dest.government === 'Merchant Republic';
       const depotBonus = Math.min(6, (origin.buildings?.depots || 0) + (dest.buildings?.depots || 0));
       const railMult = hasTech(origin, 'automated_cart_rails') || hasTech(dest, 'automated_cart_rails') ? 2 : 1;
-      const wrenchGain = ((isMerchant ? 10 : 7) + depotBonus + (isUnionTrade ? 4 : 0)) * railMult;
+      const goodsBonus = (origin.civilianGoods || 0) > 2 || (dest.civilianGoods || 0) > 2 ? 1.3 : 1;
+      const wrenchGain = Math.round(((isMerchant ? 10 : 7) + depotBonus + (isUnionTrade ? 4 : 0)) * railMult * goodsBonus);
       if (origin.id === dest.id) {
-        origin.meatballs += 10 * railMult;
-        origin.scrap += 10 * railMult;
+        origin.meatballs += Math.round(10 * railMult * goodsBonus);
+        origin.scrap += Math.round(10 * railMult * goodsBonus);
         origin.allenWrenches += wrenchGain;
         this.spawnFloatingText(u.x, u.y - 1, '+Union Supply!', '#fbbf24');
       } else {
-        dest.meatballs += 8 * railMult;
-        dest.scrap += 8 * railMult;
+        dest.meatballs += Math.round(8 * railMult * goodsBonus);
+        dest.scrap += Math.round(8 * railMult * goodsBonus);
         dest.allenWrenches += wrenchGain;
         origin.allenWrenches += wrenchGain;
         this.spawnFloatingText(
@@ -5114,6 +6793,133 @@ export class SimEngine {
       u.alive = false;
       this.deadUnitsCount++;
     }
+  }
+
+  private updateNeutralCaravan(u: Unit, dt: number): void {
+    const aliveNations = this.nations.filter((n) => n.alive);
+    if (aliveNations.length === 0) {
+      u.alive = false;
+      this.deadUnitsCount++;
+      return;
+    }
+    let dest = u.targetNationId >= 0 ? this.getNation(u.targetNationId) : undefined;
+    if (!dest || !dest.alive) {
+      dest = aliveNations[(Math.random() * aliveNations.length) | 0];
+      u.targetNationId = dest.id;
+      u.targetX = dest.capitalX + 0.5;
+      u.targetY = dest.capitalY + 0.5;
+      u.hasTarget = true;
+    }
+
+    this.moveTowards(u, u.targetX, u.targetY, dt, 1.05);
+
+    if (Math.hypot(u.x - u.targetX, u.y - u.targetY) < 2.6) {
+      dest.meatballs += 16;
+      dest.scrap += 16;
+      dest.allenWrenches += 14;
+      dest.civilianGoods = (dest.civilianGoods || 0) + 2;
+      dest.happiness = Math.min(100, dest.happiness + 4);
+      this.spawnParticleBurst(u.x, u.y, '#fbbf24', 8);
+      this.spawnFloatingText(u.x, u.y - 1.2, `CARAVAN TRADE (+Goods)!`, '#fbbf24');
+
+      u.carryAmount = Math.max(0, u.carryAmount - 6);
+      if (u.carryAmount <= 0) {
+        u.alive = false;
+        this.deadUnitsCount++;
+        return;
+      }
+      const nextStops = aliveNations.filter((n) => n.id !== dest!.id);
+      const next = nextStops.length > 0 ? nextStops[(Math.random() * nextStops.length) | 0] : dest;
+      u.targetNationId = next.id;
+      u.targetX = next.capitalX + 0.5;
+      u.targetY = next.capitalY + 0.5;
+      u.hasTarget = true;
+    }
+  }
+
+  private updateMercenaryUnit(u: Unit, dt: number): void {
+    // Check if an embattled/nearby kingdom hires this Mercenary
+    u.aiTimer -= dt;
+    if (u.aiTimer <= 0) {
+      u.aiTimer = 1.6;
+      let bestEmployer: Nation | undefined;
+      let bestDist = 20;
+      for (const n of this.nations) {
+        if (!n.alive || n.allenWrenches < 22) continue;
+        const d = Math.hypot(n.capitalX - u.x, n.capitalY - u.y);
+        const atWar = Object.values(n.relations).some((r) => r.stance === 'WAR');
+        if (d < bestDist && (atWar || (n.armyCount ?? 0) < Math.max(2, n.armyCap || 3))) {
+          bestDist = d;
+          bestEmployer = n;
+        }
+      }
+      if (bestEmployer) {
+        bestEmployer.allenWrenches -= 22;
+        u.nationId = bestEmployer.id;
+        u.isMercenary = false;
+        u.role = SurvivorRole.GUARD;
+        u.weapon = 'halogen_rifle';
+        u.atk = Math.max(u.atk, 19);
+        u.chatEmoji = '🤝';
+        u.chatTimer = 2.0;
+        bestEmployer.population++;
+        this.recountTerritoryAndHousing();
+        this.spawnParticleBurst(u.x, u.y, bestEmployer.color, 10);
+        this.spawnFloatingText(u.x, u.y - 1.2, `HIRED BY ${bestEmployer.name.split(' ')[0]}!`, '#a855f7');
+        this.addNews('WAR', `${bestEmployer.name} hired Free-Aisle Mercenary ${u.name}!`);
+        return;
+      }
+    }
+
+    // Fight hostile Staff nearby
+    let threat: Unit | null = null;
+    let bestDSq = 9 * 9;
+    this.spatialHash.queryRadius(this.units, u.x, u.y, 9, (other, _idx, dSq) => {
+      if (isStaffKind(other.kind) && other.nationId < 0 && !other.pacified && (this.isNight || u.feverTimer > 0)) {
+        if (dSq < bestDSq) {
+          bestDSq = dSq;
+          threat = other;
+        }
+      }
+    });
+    if (threat) {
+      const target = threat as Unit;
+      if (bestDSq <= 7.5 * 7.5 && bestDSq > 1.7 * 1.7) {
+        if (u.attackCooldown <= 0) {
+          u.attackCooldown = 0.58;
+          const d = Math.sqrt(bestDSq) || 1;
+          this.projectiles.push({
+            x: u.x,
+            y: u.y,
+            vx: ((target.x - u.x) / d) * 18,
+            vy: ((target.y - u.y) / d) * 18,
+            damage: u.atk,
+            nationId: -1,
+            color: '#c084fc',
+            life: 0.7,
+          });
+          if (this.isNearCamera(u.x, u.y)) {
+            soundFX.playShot('plasma_stapler');
+          }
+        }
+      } else if (bestDSq <= 1.7 * 1.7) {
+        if (u.attackCooldown <= 0) {
+          u.attackCooldown = 0.5;
+          this.damageUnit(target, u.atk, u);
+        }
+      } else {
+        this.moveTowards(u, target.x, target.y, dt, 1.05);
+      }
+      return;
+    }
+
+    if (!u.hasTarget || Math.hypot(u.x - u.targetX, u.y - u.targetY) < 1.5) {
+      const a = Math.random() * Math.PI * 2;
+      u.targetX = Math.max(4, Math.min(GRID_W - 4, u.x + Math.cos(a) * 16));
+      u.targetY = Math.max(4, Math.min(GRID_H - 4, u.y + Math.sin(a) * 16));
+      u.hasTarget = true;
+    }
+    this.moveTowards(u, u.targetX, u.targetY, dt, 0.85);
   }
 
   private updateSaboteur(u: Unit, dt: number): void {
@@ -5151,8 +6957,8 @@ export class SimEngine {
   }
 
   private updateStaffUnit(u: Unit, dt: number): void {
-    // Daytime ("Store Open"): SCP-3008-2 Staff are passive and calmly patrol aisles
-    if (!this.isNight) {
+    // Daytime ("Store Open") or Pacified Staff: calm aisle patrol
+    if (!this.isNight || u.pacified) {
       u.aiTimer -= dt;
       if (!u.hasTarget || u.aiTimer <= 0 || Math.hypot(u.x - u.targetX, u.y - u.targetY) < 1.5) {
         u.aiTimer = 3.0 + Math.random() * 2.5;
@@ -5160,7 +6966,7 @@ export class SimEngine {
         u.targetY = Math.max(4, Math.min(GRID_H - 4, u.y + (Math.random() - 0.5) * 24));
         u.hasTarget = true;
       }
-      this.moveTowards(u, u.targetX, u.targetY, dt, 0.55);
+      this.moveTowards(u, u.targetX, u.targetY, dt, u.pacified ? 0.65 : 0.55);
       return;
     }
 
@@ -5175,58 +6981,111 @@ export class SimEngine {
       hasTech(this.getNation(tileOwner), 'fluorescent_ward')
         ? 0.72
         : 1.0;
-    const nightSpeed = (isAudit ? 1.32 : 1.18) * wardSlow;
+    const sirenBuff = u.feverTimer > 0 ? 1.32 : 1.0;
+    const fogBuff = this.activeAnomaly?.type === 'AISLE_FOG' ? 1.15 : 1.0;
+    const nightSpeed = (isAudit ? 1.32 : 1.18) * wardSlow * sirenBuff * fogBuff;
 
-    let enemy: Unit | null = null;
-    let bestDSq = sightRad * sightRad;
-    this.spatialHash.queryRadius(this.units, u.x, u.y, sightRad, (other, _idx, dSq) => {
-      if ((other.insideTimer ?? 0) > 0) return;
-      if (other.kind === UnitKind.SURVIVOR || other.kind === UnitKind.CART_RUNNER) {
-        if (dSq < bestDSq) {
-          bestDSq = dSq;
-          enemy = other;
+    // 1. PA Hound (STAFF_ANNOUNCER): periodically broadcasts Closing Siren that buffs nearby Staff & panics civilians
+    if (u.kind === UnitKind.STAFF_ANNOUNCER) {
+      u.aiTimer -= dt;
+      if (u.aiTimer <= 0) {
+        u.aiTimer = 6.5;
+        let buffed = 0;
+        this.spatialHash.queryRadius(this.units, u.x, u.y, 9, (other) => {
+          if (isStaffKind(other.kind) && other.nationId < 0 && !other.pacified) {
+            other.feverTimer = Math.max(other.feverTimer, 3.5);
+            buffed++;
+          } else if (
+            this.isNationCitizen(other) &&
+            other.role !== SurvivorRole.GUARD &&
+            other.role !== SurvivorRole.GENERAL &&
+            other.role !== SurvivorRole.LEADER
+          ) {
+            other.chatEmoji = '😱';
+            other.chatTimer = 1.6;
+            other.hasTarget = false;
+          }
+        });
+        if (buffed > 0) {
+          this.spawnParticleBurst(u.x, u.y, '#ef4444', 8);
+          this.spawnFloatingText(u.x, u.y - 1.2, 'STORE CLOSED!', '#f87171');
         }
       }
-    });
-
-    if (enemy) {
-      const target = enemy as Unit;
-      if (bestDSq <= 1.75 * 1.75) {
-        if (u.attackCooldown <= 0) {
-          u.attackCooldown = u.kind === UnitKind.STAFF_CRAWLER ? 0.38 : 0.58;
-          this.damageUnit(target, Math.round(u.atk * 1.2), u);
-        }
-      } else {
-        this.moveTowards(u, target.x, target.y, dt, nightSpeed);
-      }
-      return;
     }
 
-    // Attack adjacent barricades/buildings if blocking path at night
+    // 2. Blackout Stalker (STAFF_STALKER): prioritizes extinguishing nearby lit Spotlights at night
+    if (u.kind === UnitKind.STAFF_STALKER) {
+      const tx = u.x | 0;
+      const ty = u.y | 0;
+      let targetLightIdx = -1;
+      let bestLightDistSq = 13 * 13;
+      for (let li = 0; li < this.lightSourceIndices.length; li++) {
+        const lIdx = this.lightSourceIndices[li];
+        if (this.prop[lIdx] !== PropType.SPOTLIGHT || this.disabledLightMap[lIdx] > 0) continue;
+        const lx = lIdx % GRID_W;
+        const ly = (lIdx / GRID_W) | 0;
+        const dx = lx + 0.5 - u.x;
+        const dy = ly + 0.5 - u.y;
+        const dSq = dx * dx + dy * dy;
+        if (dSq < bestLightDistSq) {
+          bestLightDistSq = dSq;
+          targetLightIdx = lIdx;
+        }
+      }
+      if (targetLightIdx >= 0) {
+        const lx = targetLightIdx % GRID_W;
+        const ly = (targetLightIdx / GRID_W) | 0;
+        if (bestLightDistSq <= 1.8 * 1.8) {
+          this.disabledLightMap[targetLightIdx] = 16;
+          this.dirtyLight = true;
+          this.spawnParticleBurst(lx + 0.5, ly + 0.5, '#60a5fa', 6);
+          this.spawnFloatingText(lx + 0.5, ly - 0.8, 'BLACKOUT!', '#60a5fa');
+          u.attackCooldown = 0.6;
+        } else {
+          this.moveTowards(u, lx + 0.5, ly + 0.5, dt, nightSpeed * 1.08);
+        }
+        return;
+      }
+      void tx;
+      void ty;
+    }
+
+    // 3. Aisle Warden (STAFF_WARDEN): smashes nearby barricades/towers with 2.2x siege damage before pressing onward
     const tx = u.x | 0;
     const ty = u.y | 0;
-    for (let dy = -1; dy <= 1; dy++) {
-      for (let dx = -1; dx <= 1; dx++) {
-        const nx = tx + dx;
-        const ny = ty + dy;
-        if (nx <= 0 || nx >= GRID_W - 1 || ny <= 0 || ny >= GRID_H - 1) continue;
-        const idx = ny * GRID_W + nx;
-        const p = this.prop[idx];
-        if (
-          p === PropType.BARRICADE_WALL ||
-          p === PropType.BARRICADE_GATE ||
-          p === PropType.SPOTLIGHT ||
-          p === PropType.MATTRESS_HUT ||
-          p === PropType.WATCHTOWER ||
-          p === PropType.BISTRO ||
-          p === PropType.WORKSHOP ||
-          p === PropType.ARCHIVE ||
-          p === PropType.CART_DEPOT
-        ) {
+    const checkAdjacentStructure = (forWardenOnly: boolean): boolean => {
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = tx + dx;
+          const ny = ty + dy;
+          if (nx <= 0 || nx >= GRID_W - 1 || ny <= 0 || ny >= GRID_H - 1) continue;
+          const idx = ny * GRID_W + nx;
+          const p = this.prop[idx];
+          const isStruct =
+            p === PropType.BARRICADE_WALL ||
+            p === PropType.BARRICADE_GATE ||
+            p === PropType.SPOTLIGHT ||
+            p === PropType.MATTRESS_HUT ||
+            p === PropType.WATCHTOWER ||
+            p === PropType.BISTRO ||
+            p === PropType.WORKSHOP ||
+            p === PropType.ARCHIVE ||
+            p === PropType.CART_DEPOT ||
+            p === PropType.TECH_LAB;
+          if (!isStruct) continue;
+          if (
+            forWardenOnly &&
+            p !== PropType.BARRICADE_WALL &&
+            p !== PropType.BARRICADE_GATE &&
+            p !== PropType.WATCHTOWER
+          ) {
+            continue;
+          }
           if (u.attackCooldown <= 0) {
-            u.attackCooldown = 0.65;
-            if (this.propHp[idx] > u.atk) {
-              this.propHp[idx] -= u.atk;
+            u.attackCooldown = u.kind === UnitKind.STAFF_WARDEN ? 0.55 : 0.65;
+            const structDmg = u.kind === UnitKind.STAFF_WARDEN ? Math.round(u.atk * 2.2) : u.atk;
+            if (this.propHp[idx] > structDmg) {
+              this.propHp[idx] -= structDmg;
             } else {
               this.ejectBuildingOccupants(idx);
               this.prop[idx] = PropType.NONE;
@@ -5235,9 +7094,101 @@ export class SimEngine {
               this.dirtyLight = true;
             }
           }
+          return true;
+        }
+      }
+      return false;
+    };
+
+    if (u.kind === UnitKind.STAFF_WARDEN && checkAdjacentStructure(true)) {
+      return;
+    }
+
+    let enemy: Unit | null = null;
+    let bestDSq = sightRad * sightRad;
+    this.spatialHash.queryRadius(this.units, u.x, u.y, sightRad, (other, _idx, dSq) => {
+      if ((other.insideTimer ?? 0) > 0) return;
+      if (this.isNationCitizen(other) || other.kind === UnitKind.CART_RUNNER || other.kind === UnitKind.SURVIVOR) {
+        if (dSq < bestDSq) {
+          bestDSq = dSq;
+          enemy = other;
+        }
+      }
+    });
+
+    // 4. Coordinated Pack Grouping & Regroup Instinct when Survivors are Dominant
+    if (this.staffPack) {
+      if (this.staffPack.phase === 'GATHERING') {
+        const dRally = Math.hypot(this.staffPack.rallyX - u.x, this.staffPack.rallyY - u.y);
+        if (dRally < 44 && (!enemy || bestDSq > 4.5 * 4.5)) {
+          if (dRally > 2.6) {
+            this.moveTowards(u, this.staffPack.rallyX, this.staffPack.rallyY, dt, nightSpeed * 1.12);
+          } else {
+            const a = (u.id % 12) * ((Math.PI * 2) / 12) + this.simTime * 0.6;
+            this.moveTowards(
+              u,
+              this.staffPack.rallyX + Math.cos(a) * 2.2,
+              this.staffPack.rallyY + Math.sin(a) * 2.2,
+              dt,
+              0.45
+            );
+          }
+          return;
+        }
+      } else if (this.staffPack.phase === 'CHARGING') {
+        const dTarget = Math.hypot(this.staffPack.targetX - u.x, this.staffPack.targetY - u.y);
+        if (dTarget < 48 && (!enemy || bestDSq > 6 * 6)) {
+          this.moveTowards(u, this.staffPack.targetX, this.staffPack.targetY, dt, nightSpeed * 1.16);
           return;
         }
       }
+    }
+
+    if (enemy) {
+      const target = enemy as Unit;
+      if (bestDSq <= 1.75 * 1.75) {
+        if (u.attackCooldown <= 0) {
+          u.attackCooldown = u.kind === UnitKind.STAFF_CRAWLER ? 0.38 : 0.58;
+          this.damageUnit(target, Math.round(u.atk * 1.2), u);
+          if (u.kind === UnitKind.STAFF_WARDEN && target.alive) {
+            const kd = Math.hypot(target.x - u.x, target.y - u.y) || 1;
+            target.x = Math.max(1.5, Math.min(GRID_W - 1.5, target.x + ((target.x - u.x) / kd) * 0.45));
+            target.y = Math.max(1.5, Math.min(GRID_H - 1.5, target.y + ((target.y - u.y) / kd) * 0.45));
+          }
+        }
+      } else {
+        // If survivors are dominant and this employee is alone outside melee, try grouping with nearby Staff
+        if (
+          this.staffAlertTier >= 1 &&
+          bestDSq > 3.5 * 3.5 &&
+          u.kind !== UnitKind.STAFF_MANAGER &&
+          u.feverTimer <= 0
+        ) {
+          let nearbyStaff = 0;
+          let rallyAlly: Unit | null = null;
+          let allyDistSq = 18 * 18;
+          this.spatialHash.queryRadius(this.units, u.x, u.y, 18, (other, _oi, dSq) => {
+            if (other.id === u.id || !isStaffKind(other.kind) || other.nationId >= 0 || other.pacified) return;
+            if (dSq <= 6 * 6) nearbyStaff++;
+            if (dSq > 4 * 4 && dSq < allyDistSq) {
+              allyDistSq = dSq;
+              rallyAlly = other;
+            }
+          });
+          if (nearbyStaff < 1 && rallyAlly) {
+            const ally = rallyAlly as Unit;
+            this.moveTowards(u, ally.x, ally.y, dt, nightSpeed * 1.06);
+            return;
+          }
+        }
+        this.moveTowards(u, target.x, target.y, dt, nightSpeed);
+      }
+      return;
+    }
+
+    // Attack adjacent barricades/buildings if blocking path at night
+    if (checkAdjacentStructure(false)) {
+      return;
     }
 
     // Converge on nearest nation capital at night
@@ -5260,12 +7211,19 @@ export class SimEngine {
         u.hasTarget = true;
       }
     }
-    this.moveTowards(u, u.targetX, u.targetY, dt, 1.15);
+    this.moveTowards(u, u.targetX, u.targetY, dt, 1.15 * sirenBuff);
   }
 
   private updateSurvivorUnit(u: Unit, dt: number): void {
     const nation = u.nationId >= 0 ? this.getNation(u.nationId) : undefined;
-    const speedMult = u.feverTimer > 0 ? 1.65 : 1.0;
+    const goodsSpeed = (nation?.civilianGoods || 0) >= 5 ? 1.1 : 1.0;
+    const anomalySpeed =
+      this.activeAnomaly?.type === 'ESPRESSO_RUSH'
+        ? 1.32
+        : this.activeAnomaly?.type === 'CLEARANCE_STAMPEDE'
+          ? 1.22
+          : 1.0;
+    const speedMult = (u.feverTimer > 0 ? 1.65 : 1.0) * goodsSpeed * anomalySpeed;
 
     // Unclaimed / Independent people: stay local & found their own kingdom instead of running across the map
     if (!nation || !nation.alive) {
@@ -5281,7 +7239,7 @@ export class SimEngine {
       let staffBestDSq = 36;
       if (this.isNight || u.feverTimer > 0) {
         this.spatialHash.queryRadius(this.units, u.x, u.y, 6, (other, _idx, dSq) => {
-          if (other.kind >= UnitKind.STAFF_NORMAL && other.kind <= UnitKind.STAFF_MANAGER && dSq < staffBestDSq) {
+          if (isStaffKind(other.kind) && dSq < staffBestDSq) {
             staffBestDSq = dSq;
             staffThreat = other;
           }
@@ -5300,7 +7258,7 @@ export class SimEngine {
         return;
       }
 
-      // Player-placed unclaimed settlers gather locally and found a brand-new kingdom
+      // Player-placed unclaimed settlers gather locally, hold a Proximity Vote if next to a country, or found a kingdom
       if (u.canFoundKingdom) {
         u.settleTimer = (u.settleTimer || 0) + dt;
         const tileIdx = Math.max(0, Math.min(GRID_W * GRID_H - 1, (u.y | 0) * GRID_W + (u.x | 0)));
@@ -5308,7 +7266,7 @@ export class SimEngine {
         const onLivingNation = tileOwner >= 0 && Boolean(this.nations[tileOwner]?.alive);
         const inSummit = Math.hypot(u.x - SUMMIT_X, u.y - SUMMIT_Y) <= SUMMIT_RADIUS + 4;
 
-        if (!onLivingNation && !inSummit && u.settleTimer >= 1.1) {
+        if (!onLivingNation && !inSummit && u.settleTimer >= 0.85) {
           const nearbySettlers: Unit[] = [];
           let sumX = 0;
           let sumY = 0;
@@ -5319,10 +7277,112 @@ export class SimEngine {
               sumY += other.y;
             }
           });
-          if (nearbySettlers.length >= 2) {
-            const avgX = sumX / nearbySettlers.length;
-            const avgY = sumY / nearbySettlers.length;
-            if (this.foundIndependentKingdomFromSettlers(nearbySettlers, avgX, avgY)) {
+          const avgX = nearbySettlers.length > 0 ? sumX / nearbySettlers.length : u.x;
+          const avgY = nearbySettlers.length > 0 ? sumY / nearbySettlers.length : u.y;
+          const ax = Math.max(1, Math.min(GRID_W - 2, avgX | 0));
+          const ay = Math.max(1, Math.min(GRID_H - 2, avgY | 0));
+
+          // Check if placed right beside an existing living country -> hold Proximity Vote!
+          if (!u.proximityVoted && nearbySettlers.some((s) => !s.proximityVoted)) {
+            let neighbor: Nation | null = null;
+            let bestNeighborDist = 17;
+            for (const cand of this.nations) {
+              if (!cand.alive) continue;
+              const d = Math.hypot(cand.capitalX - avgX, cand.capitalY - avgY);
+              if (d < bestNeighborDist) {
+                bestNeighborDist = d;
+                neighbor = cand;
+              }
+            }
+            if (!neighbor) {
+              for (let dy = -4; dy <= 4 && !neighbor; dy++) {
+                for (let dx = -4; dx <= 4 && !neighbor; dx++) {
+                  const nx = Math.max(0, Math.min(GRID_W - 1, ax + dx));
+                  const ny = Math.max(0, Math.min(GRID_H - 1, ay + dy));
+                  const ownerId = this.territory[ny * GRID_W + nx];
+                  if (ownerId >= 0 && this.nations[ownerId]?.alive) {
+                    neighbor = this.nations[ownerId];
+                  }
+                }
+              }
+            }
+
+            if (neighbor) {
+              const voters = nearbySettlers.length > 0 ? nearbySettlers : [u];
+              let yesWeight = 0.42;
+              if (neighbor.happiness >= 70) yesWeight += 0.16;
+              else if (neighbor.happiness < 42) yesWeight -= 0.18;
+              if (neighbor.government === 'Checkout Democracy' || neighbor.government === 'Merchant Republic') {
+                yesWeight += 0.12;
+              } else if (neighbor.government === 'Iron Dictatorship') {
+                yesWeight -= 0.14;
+              }
+              if (neighbor.population < 12) yesWeight += 0.1;
+              if (neighbor.meatballs > neighbor.population * 1.4) yesWeight += 0.08;
+              yesWeight = Math.max(0.15, Math.min(0.88, yesWeight));
+
+              let yesVotes = 0;
+              let noVotes = 0;
+              for (let vi = 0; vi < voters.length; vi++) {
+                if (Math.random() < yesWeight) yesVotes++;
+                else noVotes++;
+              }
+              if (yesVotes === noVotes) {
+                if (Math.random() < yesWeight) yesVotes++;
+                else noVotes++;
+              }
+              const joined = yesVotes > noVotes;
+
+              if (joined) {
+                for (const s of voters) {
+                  const role = this.pickNeededJobForNation(neighbor, true);
+                  s.nationId = neighbor.id;
+                  s.canFoundKingdom = false;
+                  s.proximityVoted = true;
+                  this.applyRoleStats(s, neighbor, role);
+                  s.hasTarget = false;
+                  s.chatEmoji = '🗳️';
+                  s.chatTimer = 2.0;
+                  neighbor.population++;
+                }
+                this.recountTerritoryAndHousing();
+                this.spawnParticleBurst(avgX, avgY, neighbor.color, 10);
+                this.spawnFloatingText(
+                  avgX,
+                  avgY - 1.3,
+                  `VOTE YES (${yesVotes}-${noVotes})! Joined ${neighbor.name}`,
+                  neighbor.color
+                );
+                this.addNews(
+                  'DIPLOMACY',
+                  `${voters.length} nearby survivor${voters.length > 1 ? 's' : ''} voted YES (${yesVotes}-${noVotes}) to join ${neighbor.name}!`
+                );
+                return;
+              } else {
+                for (const s of voters) {
+                  s.proximityVoted = true;
+                  s.chatEmoji = '🗳️';
+                  s.chatTimer = 2.0;
+                }
+                this.spawnFloatingText(
+                  avgX,
+                  avgY - 1.3,
+                  `VOTE NO (${noVotes}-${yesVotes})! Staying Independent`,
+                  '#ffda1a'
+                );
+                this.addNews(
+                  'DIPLOMACY',
+                  `Nearby survivors voted NO (${noVotes}-${yesVotes}) to stay independent from ${neighbor.name}!`
+                );
+                if (voters.length >= 2 && this.foundIndependentKingdomFromSettlers(voters, avgX, avgY, true)) {
+                  return;
+                }
+              }
+            }
+          }
+
+          if (nearbySettlers.length >= 2 && u.settleTimer >= 1.1) {
+            if (this.foundIndependentKingdomFromSettlers(nearbySettlers, avgX, avgY, nearbySettlers.some((s) => Boolean(s.proximityVoted)))) {
               return;
             }
           } else if (u.settleTimer >= 2.2 && u.settleTimer < 2.2 + dt * 1.4) {
@@ -5444,23 +7504,35 @@ export class SimEngine {
       );
     }
 
-    // 1. Combat Check: fight Staff or Hostile Nations nearby
-    const searchRad =
-      u.role === SurvivorRole.GUARD || u.role === SurvivorRole.GENERAL || u.feverTimer > 0 ? 11 : 6.5;
+    // 1. Combat Check: fight feral Staff or Hostile Nations nearby (with Firearms & Spears!)
+    const activeWeapon =
+      u.weapon && u.weapon !== 'none'
+        ? u.weapon
+        : u.role === SurvivorRole.GUARD || u.role === SurvivorRole.GENERAL || u.role === SurvivorRole.LEADER
+          ? this.getNationBestWeapon(nation, u.id).weapon
+          : 'none';
+    const rangedRange =
+      activeWeapon === 'halogen_rifle' || activeWeapon === 'plasma_stapler' || activeWeapon === 'pa_megaphone'
+        ? 8.5
+        : activeWeapon === 'nailgun'
+          ? 6.5
+          : 0;
+    const searchRad = Math.max(
+      rangedRange > 0 ? rangedRange + 2.5 : 0,
+      u.role === SurvivorRole.GUARD || u.role === SurvivorRole.GENERAL || u.feverTimer > 0 ? 11 : 6.5
+    );
     let nearestHostile: Unit | null = null;
     let bestDistSq = searchRad * searchRad;
 
     this.spatialHash.queryRadius(this.units, u.x, u.y, searchRad, (other, _idx, dSq) => {
       if ((other.insideTimer ?? 0) > 0) return;
-      const isStaff =
-        (this.isNight || u.feverTimer > 0) &&
-        other.kind >= UnitKind.STAFF_NORMAL &&
-        other.kind <= UnitKind.STAFF_MANAGER;
+      const isFeralStaff =
+        (this.isNight || u.feverTimer > 0) && isStaffKind(other.kind) && other.nationId < 0 && !other.pacified;
       const isEnemy =
         other.nationId >= 0 &&
         other.nationId !== u.nationId &&
         (this.areHostile(u.nationId, other.nationId) || u.feverTimer > 0);
-      if (isStaff || isEnemy) {
+      if (isFeralStaff || isEnemy) {
         if (dSq < bestDistSq) {
           bestDistSq = dSq;
           nearestHostile = other;
@@ -5477,14 +7549,48 @@ export class SimEngine {
         u.traits.includes('Brave') ||
         u.traits.includes('Blessed') ||
         u.feverTimer > 0 ||
+        rangedRange > 0 ||
         nation.government === 'Meatball Theocracy';
 
       if (isBrave || bestDistSq < 16) {
         if (bestDistSq <= 1.7 * 1.7) {
           if (u.attackCooldown <= 0) {
             u.attackCooldown = u.feverTimer > 0 ? 0.32 : 0.6;
-            const dmg = u.atk + (u.traits.includes('Blessed') ? 8 : 0) + (u.feverTimer > 0 ? 6 : 0);
+            const spearBonus = activeWeapon === 'allen_spear' ? 4 : 0;
+            const dmg = u.atk + spearBonus + (u.traits.includes('Blessed') ? 8 : 0) + (u.feverTimer > 0 ? 6 : 0);
             this.damageUnit(enemy, dmg, u);
+          }
+        } else if (rangedRange > 0 && bestDistSq <= rangedRange * rangedRange) {
+          if (u.attackCooldown <= 0) {
+            const d = Math.sqrt(bestDistSq) || 1;
+            const isPlasma = activeWeapon === 'plasma_stapler';
+            const isRifle = activeWeapon === 'halogen_rifle';
+            const isMegaphone = activeWeapon === 'pa_megaphone';
+            const pSpeed = isPlasma ? 22 : isRifle ? 21 : isMegaphone ? 19 : 16;
+            const pDmg = u.atk + (isPlasma ? 11 : isMegaphone ? 9 : isRifle ? 8 : 4);
+            const pColor = isPlasma ? '#c084fc' : isMegaphone ? '#f43f5e' : isRifle ? '#38bdf8' : '#fbbf24';
+            u.attackCooldown = isPlasma ? 0.48 : isRifle ? 0.55 : isMegaphone ? 0.52 : 0.62;
+            this.projectiles.push({
+              x: u.x,
+              y: u.y,
+              vx: ((enemy.x - u.x) / d) * pSpeed,
+              vy: ((enemy.y - u.y) / d) * pSpeed,
+              damage: pDmg,
+              nationId: u.nationId,
+              color: pColor,
+              life: 0.75,
+            });
+            if (this.isNearCamera(u.x, u.y)) {
+              soundFX.playShot(
+                isPlasma
+                  ? 'plasma_stapler'
+                  : isMegaphone
+                    ? 'pa_megaphone'
+                    : isRifle
+                      ? 'halogen_rifle'
+                      : 'nailgun'
+              );
+            }
           }
         } else {
           if (
@@ -5661,16 +7767,23 @@ export class SimEngine {
         u.buildVariant = undefined;
       }
 
-      // Claim tile under feet if unowned or abandoned/depopulated & outside Neutral Summit Lounge
+      // Claim tile under feet ONLY if contiguous with existing territory (prevents stray 1-tile speckles)
       const footOwner = this.territory[idx];
       if (!inSummitZone && (footOwner === -1 || (footOwner >= 0 && !this.nations[footOwner]?.alive))) {
-        if (footOwner >= 0 && this.prop[idx] === PropType.CHECKOUT_FLAG) {
-          this.prop[idx] = PropType.SPOTLIGHT;
-          this.propOwner[idx] = nation.id;
-          this.dirtyLight = true;
+        const touchesOwn =
+          this.territory[idx - GRID_W] === nation.id ||
+          this.territory[idx + GRID_W] === nation.id ||
+          this.territory[idx - 1] === nation.id ||
+          this.territory[idx + 1] === nation.id;
+        if (touchesOwn) {
+          if (footOwner >= 0 && this.prop[idx] === PropType.CHECKOUT_FLAG) {
+            this.prop[idx] = PropType.SPOTLIGHT;
+            this.propOwner[idx] = nation.id;
+            this.dirtyLight = true;
+          }
+          this.territory[idx] = nation.id;
+          this.dirtyMap = true;
         }
-        this.territory[idx] = nation.id;
-        this.dirtyMap = true;
       }
 
       // Repair damaged friendly structures during daytime
@@ -5721,7 +7834,14 @@ export class SimEngine {
             this.spawnParticleBurst(bx + 0.5, by + 0.5, '#d97706', 5);
           }
 
-          const cost = this.getBuildingCost(u.buildProp);
+          // Never build solid walls across trade walkways; automatically make them passable gates
+          const finalBuildProp =
+            u.buildProp === PropType.BARRICADE_WALL && this.biome[bIdx] === BiomeType.WALKWAY
+              ? PropType.BARRICADE_GATE
+              : u.buildProp;
+          const finalVariant = finalBuildProp === PropType.BARRICADE_GATE ? 0 : (u.buildVariant ?? 0);
+
+          const cost = this.getBuildingCost(finalBuildProp, nation);
           if (
             !bInSummit &&
             this.prop[bIdx] === PropType.NONE &&
@@ -5734,29 +7854,36 @@ export class SimEngine {
             nation.allenWrenches -= cost.wrenches;
             nation.meatballs -= cost.meatballs;
 
-            // Claim 3x3 territory footprint around new structure (unowned or abandoned/depopulated)
-            let claimedNew = false;
-            for (let dy = -1; dy <= 1; dy++) {
-              for (let dx = -1; dx <= 1; dx++) {
-                const cx = bx + dx;
-                const cy = by + dy;
-                if (cx < 1 || cx >= GRID_W - 1 || cy < 1 || cy >= GRID_H - 1) continue;
-                if (Math.hypot(cx - SUMMIT_X, cy - SUMMIT_Y) <= SUMMIT_RADIUS + 1) continue;
-                const cIdx = cy * GRID_W + cx;
-                const cOwner = this.territory[cIdx];
-                if (cOwner === -1 || (cOwner >= 0 && !this.nations[cOwner]?.alive)) {
-                  if (cOwner >= 0 && this.prop[cIdx] === PropType.CHECKOUT_FLAG) {
-                    this.prop[cIdx] = PropType.NONE;
-                    this.propOwner[cIdx] = -1;
+            // Only expand 3x3 territory for interior structures; border walls/gates/towers sit ON the border edge
+            const isBorderDefense =
+              finalBuildProp === PropType.BARRICADE_WALL ||
+              finalBuildProp === PropType.BARRICADE_GATE ||
+              finalBuildProp === PropType.WATCHTOWER;
+
+            if (!isBorderDefense) {
+              let claimedNew = false;
+              for (let dy = -1; dy <= 1; dy++) {
+                for (let dx = -1; dx <= 1; dx++) {
+                  const cx = bx + dx;
+                  const cy = by + dy;
+                  if (cx < 1 || cx >= GRID_W - 1 || cy < 1 || cy >= GRID_H - 1) continue;
+                  if (Math.hypot(cx - SUMMIT_X, cy - SUMMIT_Y) <= SUMMIT_RADIUS + 1) continue;
+                  const cIdx = cy * GRID_W + cx;
+                  const cOwner = this.territory[cIdx];
+                  if (cOwner === -1 || (cOwner >= 0 && !this.nations[cOwner]?.alive)) {
+                    if (cOwner >= 0 && this.prop[cIdx] === PropType.CHECKOUT_FLAG) {
+                      this.prop[cIdx] = PropType.NONE;
+                      this.propOwner[cIdx] = -1;
+                    }
+                    this.territory[cIdx] = nation.id;
+                    claimedNew = true;
                   }
-                  this.territory[cIdx] = nation.id;
-                  claimedNew = true;
                 }
               }
+              if (claimedNew) this.dirtyMap = true;
             }
-            if (claimedNew) this.dirtyMap = true;
 
-            this.placeNationProp(bx, by, u.buildProp, cost.hp, nation.id, u.buildVariant ?? 0);
+            this.placeNationProp(bx, by, finalBuildProp, cost.hp, nation.id, finalVariant);
             this.records.totalBuildingsBuilt += 1;
             this.spawnParticleBurst(bx + 0.5, by + 0.5, '#fbbf24', 7);
             u.chatEmoji = '🔨';
@@ -5932,7 +8059,7 @@ export class SimEngine {
         }
         // Feed nearby hungry/injured citizens
         this.spatialHash.queryRadius(this.units, u.x, u.y, 4.5, (ally) => {
-          if (ally.nationId === nation.id && ally.kind === UnitKind.SURVIVOR) {
+          if (ally.nationId === nation.id && this.isNationCitizen(ally)) {
             ally.hunger = Math.max(0, ally.hunger - 22);
             if (ally.hp < ally.maxHp) ally.hp = Math.min(ally.maxHp, ally.hp + 5);
           }
@@ -5943,9 +8070,10 @@ export class SimEngine {
     }
 
     if (u.role === SurvivorRole.TINKER) {
-      // Wrench Tinkers walk into Workshops & Archives to craft wrenches & advance research
+      // Wrench Tinkers walk into Workshops, Archives & SCP-IKEA Tech Labs to craft & advance research
       if ((u.visitCooldown ?? 0) <= 0) {
         const shop = this.findNearestFriendlyBuilding(nation.id, u.x | 0, u.y | 0, 28, [
+          PropType.TECH_LAB,
           PropType.WORKSHOP,
           PropType.ARCHIVE,
         ]);
@@ -5977,10 +8105,18 @@ export class SimEngine {
       }
       if (u.aiTimer <= 0) {
         u.aiTimer = 3.5;
-        const shopBonus = Math.min(1.4, ((nation.buildings?.workshops || 0) + (nation.buildings?.archives || 0)) * 0.35);
-        nation.allenWrenches += 0.85 + shopBonus;
+        const schemMult = hasTech(nation, 'swedish_schematics') ? 1.3 : 1.0;
+        const shopBonus = Math.min(
+          1.8,
+          ((nation.buildings?.workshops || 0) + (nation.buildings?.archives || 0) + (nation.buildings?.techLabs || 0)) *
+            0.35
+        );
+        nation.allenWrenches += (0.85 + shopBonus) * schemMult;
+        if (nation.activeResearchId && (nation.buildings?.techLabs || 0) > 0) {
+          nation.researchPoints = (nation.researchPoints || 0) + 0.65 * schemMult;
+        }
         if (Math.random() < 0.3) {
-          u.chatEmoji = '🔧';
+          u.chatEmoji = (nation.buildings?.techLabs || 0) > 0 ? '🔬' : '🔧';
           u.chatTimer = 1.8;
         }
       }
@@ -6211,7 +8347,8 @@ export class SimEngine {
       p === PropType.WORKSHOP ||
       p === PropType.ARCHIVE ||
       p === PropType.CART_DEPOT ||
-      p === PropType.WATCHTOWER
+      p === PropType.WATCHTOWER ||
+      p === PropType.TECH_LAB
     );
   }
 
@@ -6324,6 +8461,13 @@ export class SimEngine {
     if (p === PropType.WATCHTOWER) {
       this.watchtowerIndices.push(idx);
     }
+    if (p === PropType.TECH_LAB) {
+      this.techLabIndices.push(idx);
+      this.dirtyLight = true;
+    }
+    if (p === PropType.ESCALATOR) {
+      this.escalatorIndices.push(idx);
+    }
     if (ownerId >= 0 && this.isEnterableBuilding(p)) {
       let arr = this.nationBuildingsCache.get(ownerId);
       if (!arr) {
@@ -6340,16 +8484,21 @@ export class SimEngine {
         p === PropType.ARCHIVE ||
         p === PropType.CART_DEPOT ||
         p === PropType.WATCHTOWER ||
-        p === PropType.SPOTLIGHT)
+        p === PropType.SPOTLIGHT ||
+        p === PropType.TECH_LAB ||
+        p === PropType.ESCALATOR)
     ) {
       const n = ownerId >= 0 ? this.getNation(ownerId) : undefined;
       this.recentBuilds.push({
         x,
         y,
-        color: n ? n.color : '#fbbf24',
+        color: n ? n.color : '#22d3ee',
         life: 2.8,
         maxLife: 2.8,
       });
+      if (this.isNearCamera(x, y)) {
+        soundFX.playBuild();
+      }
     }
   }
 
@@ -6414,9 +8563,18 @@ export class SimEngine {
       if (gx < 1 || gx >= GRID_W - 1 || gy < 1 || gy >= GRID_H - 1) return false;
       const idx = gy * GRID_W + gx;
       const p = this.prop[idx];
-      if (p === PropType.NONE || p === PropType.LAMP || p === PropType.CHECKOUT_FLAG) return true;
+      if (p === PropType.NONE || p === PropType.LAMP || p === PropType.CHECKOUT_FLAG || p === PropType.ESCALATOR) return true;
       if (p === PropType.BARRICADE_GATE) {
         const owner = this.propOwner[idx];
+        if (u.kind === UnitKind.CART_RUNNER && !u.isSiegeCart) {
+          // Trade carts pass through unowned gates and any non-hostile, non-embargoing nation's road gates
+          return (
+            owner < 0 ||
+            (u.nationId >= 0 &&
+              !this.areHostile(u.nationId, owner) &&
+              this.getStance(u.nationId, owner) !== 'EMBARGO')
+          );
+        }
         return u.nationId >= 0 && owner >= 0 && this.areFriendly(u.nationId, owner);
       }
       if (p === PropType.SHELF || p === PropType.BARRICADE_WALL) return false;
@@ -6434,12 +8592,22 @@ export class SimEngine {
       moved = true;
     }
     if (!moved) {
-      // Slide perpendicular along obstacle
+      // Slide perpendicular along obstacle; try both directions (prefer walkways for carts)
       const perpX = (-dy / dist) * step;
       const perpY = (dx / dist) * step;
-      if (canWalk(u.x + perpX, u.y + perpY)) {
+      const opt1 = canWalk(u.x + perpX, u.y + perpY);
+      const opt2 = canWalk(u.x - perpX, u.y - perpY);
+      if (opt1 && opt2 && u.kind === UnitKind.CART_RUNNER) {
+        const idx1 = ((u.y + perpY) | 0) * GRID_W + ((u.x + perpX) | 0);
+        const onRoad1 = this.biome[idx1] === BiomeType.WALKWAY;
+        u.x += onRoad1 ? perpX : -perpX;
+        u.y += onRoad1 ? perpY : -perpY;
+      } else if (opt1) {
         u.x += perpX;
         u.y += perpY;
+      } else if (opt2) {
+        u.x -= perpX;
+        u.y -= perpY;
       }
     }
 
@@ -6451,11 +8619,22 @@ export class SimEngine {
       u.lastCheckY = u.y;
       u.stuckTimer = 0;
       if (prog < 0.75) {
-        // Clear target & pick fresh nearby direction
-        u.hasTarget = false;
-        const randA = Math.random() * Math.PI * 2;
-        u.targetX = Math.max(2, Math.min(GRID_W - 2, u.x + Math.cos(randA) * 7));
-        u.targetY = Math.max(2, Math.min(GRID_H - 2, u.y + Math.sin(randA) * 7));
+        if (u.kind === UnitKind.CART_RUNNER && !u.isSiegeCart) {
+          // Sidestep around third-party walls/sanctions so trade routes never deadlock
+          const perpAng = Math.atan2(dy, dx) + (Math.random() < 0.5 ? Math.PI / 2 : -Math.PI / 2);
+          const sidex = Math.max(2, Math.min(GRID_W - 2, u.x + Math.cos(perpAng) * 3.5));
+          const sidey = Math.max(2, Math.min(GRID_H - 2, u.y + Math.sin(perpAng) * 3.5));
+          if (canWalk(sidex, sidey)) {
+            u.x = sidex;
+            u.y = sidey;
+          }
+        } else {
+          // Clear target & pick fresh nearby direction
+          u.hasTarget = false;
+          const randA = Math.random() * Math.PI * 2;
+          u.targetX = Math.max(2, Math.min(GRID_W - 2, u.x + Math.cos(randA) * 7));
+          u.targetY = Math.max(2, Math.min(GRID_H - 2, u.y + Math.sin(randA) * 7));
+        }
       }
     }
   }
@@ -6470,7 +8649,7 @@ export class SimEngine {
           : -1;
     const atkNation = atkNationId >= 0 ? this.getNation(atkNationId) : undefined;
     const victimNation =
-      victim.kind === UnitKind.SURVIVOR && victim.nationId >= 0
+      this.isNationCitizen(victim) && victim.nationId >= 0
         ? this.getNation(victim.nationId)
         : undefined;
 
@@ -6481,25 +8660,35 @@ export class SimEngine {
 
     victim.hp -= dmg;
     victim.hitFlash = 0.14;
+    if (attacker && this.isNearCamera(victim.x, victim.y)) {
+      soundFX.playMeleeHit();
+    }
     if (victim.hp <= 0) {
       victim.alive = false;
       this.deadUnitsCount++;
+      if (this.isNearCamera(victim.x, victim.y)) {
+        soundFX.playDeath(isStaffKind(victim.kind));
+      }
       if (attacker) {
         attacker.kills++;
         if (
-          attacker.kind === UnitKind.SURVIVOR &&
+          this.isNationCitizen(attacker) &&
           attacker.alive &&
           !attacker.veteranTitle &&
-          (attacker.kills >= 3 || victim.kind === UnitKind.STAFF_MANAGER)
+          (attacker.kills >= 3 ||
+            victim.kind === UnitKind.STAFF_MANAGER ||
+            victim.kind === UnitKind.STAFF_WARDEN)
         ) {
           attacker.veteranTitle =
             victim.kind === UnitKind.STAFF_MANAGER
               ? 'Manager-Slayer'
-              : attacker.role === SurvivorRole.GENERAL
-                ? 'Grand Marshal'
-                : attacker.role === SurvivorRole.GUARD
-                  ? 'Aisle Champion'
-                  : 'Store Veteran';
+              : victim.kind === UnitKind.STAFF_WARDEN
+                ? 'Warden-Breaker'
+                : attacker.role === SurvivorRole.GENERAL
+                  ? 'Grand Marshal'
+                  : attacker.role === SurvivorRole.GUARD
+                    ? 'Aisle Champion'
+                    : 'Store Veteran';
           attacker.maxHp += 20;
           attacker.hp = Math.min(attacker.maxHp, attacker.hp + 20);
           attacker.atk += 3;
@@ -6509,15 +8698,16 @@ export class SimEngine {
           attacker.chatTimer = 2.2;
         }
       }
-      if (victim.kind >= UnitKind.STAFF_NORMAL && victim.kind <= UnitKind.STAFF_MANAGER) {
+      if (isStaffKind(victim.kind) && victim.nationId < 0) {
         this.records.totalStaffSlain += 1;
-      } else if (victim.kind === UnitKind.SURVIVOR) {
+        this.recentStaffSlainWindow += 1;
+      } else if (this.isNationCitizen(victim)) {
         this.records.totalSurvDeaths += 1;
       }
       this.spawnParticleBurst(
         victim.x,
         victim.y,
-        victim.kind >= UnitKind.STAFF_NORMAL ? '#fde047' : '#ef4444',
+        isStaffKind(victim.kind) ? '#fde047' : '#ef4444',
         5
       );
 
@@ -6534,7 +8724,7 @@ export class SimEngine {
         const hasAnyLivingCitizen = this.units.some(
           (other) =>
             other.alive &&
-            other.kind === UnitKind.SURVIVOR &&
+            this.isNationCitizen(other) &&
             other.nationId === victimNation.id
         );
 
@@ -6577,12 +8767,14 @@ export class SimEngine {
 
       let hit = false;
       this.spatialHash.queryRadius(this.units, p.x, p.y, 1.1, (u) => {
-        if (hit) return;
+        if (hit || (u.insideTimer ?? 0) > 0) return;
+        const isFeralStaff =
+          isStaffKind(u.kind) && u.nationId < 0 && !u.pacified && (this.isNight || p.nationId < 0);
         const isEnemy =
-          (this.isNight && u.kind >= UnitKind.STAFF_NORMAL) ||
-          (u.nationId >= 0 && this.areHostile(p.nationId, u.nationId));
+          isFeralStaff ||
+          (p.nationId >= 0 && u.nationId >= 0 && u.nationId !== p.nationId && this.areHostile(p.nationId, u.nationId));
         if (isEnemy) {
-          this.damageUnit(u, p.damage, undefined, p.nationId);
+          this.damageUnit(u, p.damage, undefined, p.nationId >= 0 ? p.nationId : undefined);
           hit = true;
         }
       });
@@ -6644,8 +8836,17 @@ export class SimEngine {
       case 'spawn_staff': {
         const count = brush === 'S' ? 2 : brush === 'M' ? 6 : 12;
         for (let i = 0; i < count; i++) {
+          const r = Math.random();
+          const kind =
+            r < 0.25
+              ? UnitKind.STAFF_CRAWLER
+              : r < 0.37
+                ? UnitKind.STAFF_WARDEN
+                : r < 0.45
+                  ? UnitKind.STAFF_STALKER
+                  : UnitKind.STAFF_NORMAL;
           this.spawnStaff(
-            Math.random() < 0.3 ? UnitKind.STAFF_CRAWLER : UnitKind.STAFF_NORMAL,
+            kind,
             tx + (Math.random() - 0.5) * rad,
             ty + (Math.random() - 0.5) * rad
           );
@@ -6659,15 +8860,44 @@ export class SimEngine {
         soundFX.playChime(140, 0.2, 'sawtooth');
         break;
       }
+      case 'spawn_warden': {
+        this.spawnStaff(UnitKind.STAFF_WARDEN, tx + 0.5, ty + 0.5);
+        this.addNews('STAFF', 'An armored SCP-3008-2 Aisle Warden began smashing barricades!');
+        soundFX.playChime(160, 0.16, 'sawtooth');
+        break;
+      }
+      case 'spawn_stalker': {
+        this.spawnStaff(UnitKind.STAFF_STALKER, tx + 0.5, ty + 0.5);
+        this.addNews('STAFF', 'A fast SCP-3008-2 Blackout Stalker is hunting spotlights!');
+        soundFX.playChime(210, 0.14, 'sawtooth');
+        break;
+      }
+      case 'spawn_announcer': {
+        this.spawnStaff(UnitKind.STAFF_ANNOUNCER, tx + 0.5, ty + 0.5);
+        this.addNews('STAFF', 'An SCP-3008-2 PA Hound sounded the closing siren!');
+        soundFX.playChime(240, 0.16, 'square');
+        break;
+      }
       case 'spawn_trader': {
         this.spawnSurvivor(-1, SurvivorRole.TRADER, tx + 0.5, ty + 0.5);
         soundFX.playChime(640, 0.07);
+        break;
+      }
+      case 'spawn_caravan': {
+        this.spawnCaravan(tx + 0.5, ty + 0.5);
+        soundFX.playChime(660, 0.09);
+        break;
+      }
+      case 'spawn_mercenary': {
+        this.spawnMercenary(tx + 0.5, ty + 0.5);
+        soundFX.playChime(520, 0.09);
         break;
       }
       case 'paint_food':
       case 'paint_warehouse':
       case 'paint_showroom':
       case 'paint_dark':
+      case 'paint_road':
       case 'paint_eraser': {
         const rSq = rad * rad;
         for (let dy = -rad; dy <= rad; dy++) {
@@ -6707,6 +8937,12 @@ export class SimEngine {
               }
             } else if (tool === 'paint_dark') {
               this.biome[idx] = BiomeType.DARK_SECTOR;
+            } else if (tool === 'paint_road') {
+              this.biome[idx] = BiomeType.WALKWAY;
+              if (this.prop[idx] !== PropType.NONE && this.propOwner[idx] === -1) {
+                this.prop[idx] = PropType.NONE;
+                this.propHp[idx] = 0;
+              }
             }
           }
         }
@@ -7024,7 +9260,7 @@ export class SimEngine {
       case 'power_staff_purge': {
         let purged = 0;
         this.spatialHash.queryRadius(this.units, tx, ty, rad + 4, (u) => {
-          if (u.kind >= UnitKind.STAFF_NORMAL && u.kind <= UnitKind.STAFF_MANAGER) {
+          if (isStaffKind(u.kind)) {
             this.damageUnit(u, u.hp + 999);
             purged++;
           }
@@ -7178,10 +9414,165 @@ export class SimEngine {
         soundFX.playChime(190, 0.14, 'sawtooth');
         break;
       }
+      case 'power_anomaly': {
+        const anomaly = this.triggerStoreAnomaly();
+        this.spawnParticleBurst(tx, ty, anomaly.color, 20);
+        this.spawnFloatingText(tx, ty - 1.3, `ANOMALY: ${anomaly.label.toUpperCase()}!`, anomaly.color);
+        break;
+      }
+      case 'power_supply_drop': {
+        const dropR = Math.max(2, rad - 1);
+        let dropped = 0;
+        for (let dy = -dropR; dy <= dropR; dy += 2) {
+          for (let dx = -dropR; dx <= dropR; dx += 2) {
+            if (dropped >= 6) break;
+            const nx = tx + dx;
+            const ny = ty + dy;
+            if (nx <= 2 || nx >= GRID_W - 2 || ny <= 2 || ny >= GRID_H - 2) continue;
+            if (Math.hypot(nx - SUMMIT_X, ny - SUMMIT_Y) <= SUMMIT_RADIUS + 1) continue;
+            const idx = ny * GRID_W + nx;
+            if (this.prop[idx] !== PropType.NONE) continue;
+            const kind = dropped % 3 === 0 ? PropType.MEATBALL_VAT : dropped % 3 === 1 ? PropType.WOOD_PALLET : PropType.SHELF;
+            this.prop[idx] = kind;
+            this.propHp[idx] = 120;
+            this.propMaxHp[idx] = 120;
+            this.propOwner[idx] = -1;
+            dropped++;
+          }
+        }
+        const terr = this.territory[ty * GRID_W + tx];
+        const n = terr >= 0 ? this.getNation(terr) : undefined;
+        if (n && n.alive) {
+          n.meatballs += 40;
+          n.scrap += 40;
+          n.allenWrenches += 25;
+          n.firearms = (n.firearms || 0) + 2;
+          n.civilianGoods = (n.civilianGoods || 0) + 2;
+        }
+        if (dropped > 0) this.dirtyMap = true;
+        this.spawnParticleBurst(tx, ty, '#fbbf24', 18);
+        this.spawnFloatingText(tx, ty - 1.2, 'SUPPLY PARCEL DROP!', '#fbbf24');
+        soundFX.playPower();
+        break;
+      }
+      case 'power_pacify_staff': {
+        let pacified = 0;
+        this.spatialHash.queryRadius(this.units, tx, ty, rad + 4, (u) => {
+          if (isStaffKind(u.kind) && u.nationId < 0) {
+            u.pacified = true;
+            u.feverTimer = 0;
+            u.hasTarget = false;
+            u.chatEmoji = '🕊️';
+            u.chatTimer = 2.6;
+            pacified++;
+          }
+        });
+        this.spawnParticleBurst(tx, ty, '#34d399', 18);
+        this.spawnFloatingText(
+          tx,
+          ty - 1.2,
+          pacified > 0 ? `STAFF PACIFIED (${pacified})!` : 'TAMED STAFF AURA',
+          '#34d399'
+        );
+        soundFX.playPower();
+        break;
+      }
+      case 'power_prosperity': {
+        const terr = this.territory[ty * GRID_W + tx];
+        const targetNation =
+          terr >= 0
+            ? this.getNation(terr)
+            : this.nations.find((n) => n.alive && Math.hypot(n.capitalX - tx, n.capitalY - ty) < 28);
+        if (targetNation && targetNation.alive) {
+          targetNation.happiness = Math.min(100, targetNation.happiness + 12);
+          targetNation.meatballs += 50;
+          targetNation.scrap += 50;
+          targetNation.allenWrenches += 35;
+          targetNation.civilianGoods = (targetNation.civilianGoods || 0) + 4;
+          targetNation.firearms = (targetNation.firearms || 0) + 3;
+          for (let i = 0; i < 2; i++) {
+            const role = this.pickNeededJobForNation(targetNation, false);
+            this.spawnSurvivor(
+              targetNation.id,
+              role,
+              targetNation.capitalX + (Math.random() - 0.5) * 3,
+              targetNation.capitalY + (Math.random() - 0.5) * 3
+            );
+          }
+          this.recountTerritoryAndHousing();
+          this.spawnParticleBurst(tx, ty, '#ffda1a', 20);
+          this.spawnFloatingText(tx, ty - 1.3, 'GOLDEN PROSPERITY!', '#ffda1a');
+          this.addNews('GOD', `Golden Age Prosperity blessed ${targetNation.name}!`);
+          soundFX.playPower();
+        } else {
+          this.spawnFloatingText(tx, ty - 1, 'Tap a Kingdom for Prosperity', '#cbd5e1');
+        }
+        break;
+      }
+      case 'power_vortex': {
+        let pulled = 0;
+        this.spatialHash.queryRadius(this.units, tx, ty, rad + 5, (u) => {
+          const dx = tx + 0.5 - u.x;
+          const dy = ty + 0.5 - u.y;
+          const d = Math.hypot(dx, dy) || 1;
+          if (d > 0.6) {
+            u.x = Math.max(1.5, Math.min(GRID_W - 1.5, u.x + (dx / d) * Math.min(d * 0.72, 4.5)));
+            u.y = Math.max(1.5, Math.min(GRID_H - 1.5, u.y + (dy / d) * Math.min(d * 0.72, 4.5)));
+          }
+          if (isStaffKind(u.kind) && u.nationId < 0) {
+            this.damageUnit(u, 28);
+          }
+          pulled++;
+        });
+        this.spawnParticleBurst(tx, ty, '#a855f7', 22);
+        this.spawnFloatingText(tx, ty - 1.3, pulled > 0 ? `AISLE VORTEX (${pulled})!` : 'AISLE VORTEX!', '#a855f7');
+        soundFX.playChime(320, 0.16, 'triangle');
+        break;
+      }
+      case 'power_enlighten': {
+        const terr = this.territory[ty * GRID_W + tx];
+        const targetNation =
+          terr >= 0
+            ? this.getNation(terr)
+            : this.nations.find((n) => n.alive && Math.hypot(n.capitalX - tx, n.capitalY - ty) < 28);
+        if (targetNation && targetNation.alive) {
+          targetNation.researchPoints = (targetNation.researchPoints || 0) + 85;
+          if (!targetNation.activeResearchId) {
+            const unlocked = new Set(targetNation.researchedTechs || []);
+            const nextNode = RESEARCH_TREE.find(
+              (node) => !unlocked.has(node.id) && canResearchTech(targetNation, node)
+            );
+            if (nextNode) {
+              targetNation.activeResearchId = nextNode.id;
+            }
+          }
+          if (targetNation.activeResearchId) {
+            const node = RESEARCH_BY_ID[targetNation.activeResearchId];
+            if (node && (targetNation.researchPoints || 0) >= node.cost) {
+              targetNation.researchPoints = Math.max(0, (targetNation.researchPoints || 0) - node.cost);
+              if (!targetNation.researchedTechs) targetNation.researchedTechs = [];
+              if (!targetNation.researchedTechs.includes(node.id)) {
+                targetNation.researchedTechs.push(node.id);
+              }
+              this.applyTechUnlockEffects(targetNation, node.id);
+              targetNation.activeResearchId = null;
+              this.addNews('GOD', `Divine Epiphany: ${targetNation.name} instantly completed ${node.name}!`);
+            }
+          }
+          this.spawnParticleBurst(tx, ty, '#22d3ee', 20);
+          this.spawnFloatingText(tx, ty - 1.3, 'BLUEPRINT EPIPHANY!', '#22d3ee');
+          soundFX.playPower();
+        } else {
+          this.spawnFloatingText(tx, ty - 1, 'Tap a Kingdom to Enlighten', '#cbd5e1');
+        }
+        break;
+      }
       case 'build_spotlight':
       case 'build_watchtower':
       case 'build_wall':
-      case 'build_bistro': {
+      case 'build_bistro':
+      case 'build_tech_lab':
+      case 'build_escalator': {
         const idx = ty * GRID_W + tx;
         const inSummit = Math.hypot(tx - SUMMIT_X, ty - SUMMIT_Y) <= SUMMIT_RADIUS + 1;
         if (inSummit || this.prop[idx] === PropType.CHECKOUT_FLAG) {
@@ -7210,15 +9601,25 @@ export class SimEngine {
               ? PropType.WATCHTOWER
               : tool === 'build_bistro'
                 ? PropType.BISTRO
-                : PropType.BARRICADE_WALL;
-        const hp =
+                : tool === 'build_tech_lab'
+                  ? PropType.TECH_LAB
+                  : tool === 'build_escalator'
+                    ? PropType.ESCALATOR
+                    : PropType.BARRICADE_WALL;
+        const baseHp =
           propType === PropType.WATCHTOWER
             ? 190
-            : propType === PropType.BISTRO
-              ? 150
-              : propType === PropType.SPOTLIGHT
-                ? 150
+            : propType === PropType.TECH_LAB
+              ? 185
+              : propType === PropType.ESCALATOR
+                ? 210
                 : 150;
+        const hp =
+          ownerNation &&
+          hasTech(ownerNation, 'flatpack_automation') &&
+          (propType === PropType.WATCHTOWER || propType === PropType.BARRICADE_WALL || propType === PropType.TECH_LAB)
+            ? Math.round(baseHp * 1.45)
+            : baseHp;
         const variant = propType === PropType.BARRICADE_WALL ? 1 + ((tx + ty) % 4) : 0;
         this.ejectBuildingOccupants(idx);
         this.placeNationProp(tx, ty, propType, hp, ownerId, variant);
@@ -7228,7 +9629,10 @@ export class SimEngine {
         }
         this.dirtyLight = true;
         this.recountTerritoryAndHousing();
-        this.spawnParticleBurst(tx + 0.5, ty + 0.5, ownerNation?.color || '#ffda1a', 7);
+        this.spawnParticleBurst(tx + 0.5, ty + 0.5, propType === PropType.ESCALATOR ? '#22d3ee' : ownerNation?.color || '#ffda1a', 7);
+        if (propType === PropType.ESCALATOR) {
+          this.spawnFloatingText(tx + 0.5, ty - 1, '⇅ ESCALATOR BUILT!', '#22d3ee');
+        }
         soundFX.playChime(620, 0.06);
         break;
       }
@@ -7250,15 +9654,36 @@ export class SimEngine {
       p === PropType.SPOTLIGHT ||
       p === PropType.CHECKOUT_FLAG ||
       p === PropType.BARRICADE_WALL ||
-      p === PropType.BARRICADE_GATE;
+      p === PropType.BARRICADE_GATE ||
+      p === PropType.TECH_LAB ||
+      p === PropType.ESCALATOR ||
+      p === PropType.MEATBALL_VAT;
     if (!isKingdomStruct) return null;
 
     const occupants: Array<{ id: number; name: string; role: SurvivorRole }> = [];
+    let chefsActive = 0;
     for (let i = 0; i < this.units.length; i++) {
       const u = this.units[i];
       if (!u.alive || (u.insideTimer ?? 0) <= 0 || u.insideBuildingIdx !== idx) continue;
       occupants.push({ id: u.id, name: u.name, role: u.role });
+      if (u.role === SurvivorRole.CHEF) chefsActive++;
     }
+    const ownerId = this.propOwner[idx];
+    const ownerNation = ownerId >= 0 ? this.getNation(ownerId) : undefined;
+    const linkedEscalators =
+      p === PropType.ESCALATOR
+        ? this.escalatorIndices.filter((eIdx) => {
+            if (eIdx === idx || this.prop[eIdx] !== PropType.ESCALATOR) return false;
+            const eOwner = this.propOwner[eIdx];
+            return eOwner === -1 || ownerId === -1 || this.areFriendly(ownerId, eOwner);
+          }).length
+        : undefined;
+    const kitchenOutput =
+      p === PropType.BISTRO
+        ? `${hasTech(ownerNation, 'lingonberry_kitchens') ? '3.4' : '2.4'} Meatballs / shift`
+        : p === PropType.MEATBALL_VAT
+          ? 'Simmering Vat Stock (+6 Meatballs / harvest)'
+          : undefined;
     return {
       idx,
       tx: gx,
@@ -7266,9 +9691,12 @@ export class SimEngine {
       prop: p,
       hp: this.propHp[idx],
       maxHp: Math.max(1, this.propMaxHp[idx]),
-      ownerId: this.propOwner[idx],
+      ownerId,
       occupants,
       disabled: this.disabledLightMap[idx] > 0,
+      chefsActive: p === PropType.BISTRO || p === PropType.MEATBALL_VAT ? chefsActive : undefined,
+      linkedEscalators,
+      kitchenOutput,
     };
   }
 
@@ -7349,12 +9777,14 @@ export class SimEngine {
       b.happiness = Math.min(100, b.happiness + 6);
       this.connectUnionLandsAndCorridor(a, b, false);
       this.recountTerritoryAndHousing();
-      this.addNews('UNION', `Divine Decree: ${a.name} & ${b.name} linked corridors & walls in Union!`);
+      this.addNews('UNION', `Divine Decree: ${a.name} & ${b.name} linked corridors & borders in Union!`);
       this.spawnFloatingText(a.capitalX, a.capitalY - 2, 'UNION CORRIDOR!', '#fbbf24');
     } else if (stance === 'ALLIANCE') {
-      this.addNews('DIPLOMACY', `Divine Decree: ${a.name} & ${b.name} formed an Alliance!`);
+      this.connectTradeRoad(a, b);
+      this.addNews('DIPLOMACY', `Divine Decree: ${a.name} & ${b.name} formed an Alliance & linked roads!`);
     } else if (stance === 'TRADE_PACT') {
-      this.addNews('TRADE', `Divine Decree: ${a.name} & ${b.name} opened a Trade Pact!`);
+      this.connectTradeRoad(a, b);
+      this.addNews('TRADE', `Divine Decree: ${a.name} & ${b.name} opened a Trade Pact & trade avenue!`);
     } else if (stance === 'NEUTRAL' || stance === 'TRUCE') {
       a.warExhaustion = 0;
       b.warExhaustion = 0;
@@ -7415,10 +9845,12 @@ export class SimEngine {
 
   public render(ctx: CanvasRenderingContext2D, viewW: number, viewH: number): void {
     const nowMs = performance.now();
-    if (this.dirtyMap && (this.forceMapRebuild || nowMs - this.lastMapRebuildMs >= 240)) {
+    const mapMinInterval = this.currentFps < 38 ? 850 : 420;
+    const lightMinInterval = this.currentFps < 38 ? 520 : 260;
+    if (this.dirtyMap && (this.forceMapRebuild || nowMs - this.lastMapRebuildMs >= mapMinInterval)) {
       this.rebuildMapCache();
     }
-    if (this.dirtyLight && (this.forceLightRebuild || nowMs - this.lastLightRebuildMs >= 180)) {
+    if (this.dirtyLight && (this.forceLightRebuild || nowMs - this.lastLightRebuildMs >= lightMinInterval)) {
       this.recomputeLightMap();
     }
 
@@ -7430,6 +9862,8 @@ export class SimEngine {
     const zoom = this.camera.zoom;
     const halfW = viewW / (2 * zoom);
     const halfH = viewH / (2 * zoom);
+    this.viewTilesHalfW = halfW / TILE_SIZE + 4;
+    this.viewTilesHalfH = halfH / TILE_SIZE + 4;
     const leftPx = this.camera.x - halfW;
     const topPx = this.camera.y - halfH;
 
@@ -7459,8 +9893,9 @@ export class SimEngine {
     const minTy = Math.max(0, ((topPx / TILE_SIZE) | 0) - 1);
     const maxTy = Math.min(GRID_H - 1, (((topPx + viewH / zoom) / TILE_SIZE) | 0) + 1);
 
-    // Pre-collect occupied building tiles so windows & roof badges light up cleanly
-    const occupiedBuildings = new Map<number, { count: number; icon: string }>();
+    // Pre-collect occupied building tiles so windows & roof badges light up cleanly (reuses cached Map)
+    const occupiedBuildings = this.occupiedBuildingsCache;
+    occupiedBuildings.clear();
     for (let i = 0; i < this.units.length; i++) {
       const u = this.units[i];
       if (!u.alive || (u.insideTimer ?? 0) <= 0) continue;
@@ -7471,7 +9906,7 @@ export class SimEngine {
         u.role === SurvivorRole.CHEF
           ? '🍖'
           : u.role === SurvivorRole.TINKER
-            ? '🔧'
+            ? '🔬'
             : u.role === SurvivorRole.TRADER
               ? '🛒'
               : u.role === SurvivorRole.GUARD
@@ -7481,7 +9916,8 @@ export class SimEngine {
       else occupiedBuildings.set(bIdx, { count: 1, icon });
     }
 
-    const lodSkipFurniture = zoom < 0.78;
+    const lowFps = this.currentFps < 32;
+    const simpleResources = lowFps || zoom < 0.58;
 
     // 2. Draw visible Props & Distinct 2.5D Kingdom Buildings
     for (let ty = minTy; ty <= maxTy; ty++) {
@@ -7492,52 +9928,83 @@ export class SimEngine {
         const p = this.prop[idx];
         const fire = this.fireMap[idx];
         if (p === PropType.NONE && fire === 0) continue;
-        if (
-          lodSkipFurniture &&
-          fire === 0 &&
-          (p === PropType.SHELF ||
-            p === PropType.WOOD_PALLET ||
-            p === PropType.COUCH ||
-            p === PropType.BED ||
-            p === PropType.LAMP)
-        ) {
-          continue;
-        }
         const px = tx * TILE_SIZE;
         const occ = occupiedBuildings.get(idx);
 
         if (p === PropType.SHELF) {
           ctx.fillStyle = '#78350f';
           ctx.fillRect(px + 1, py + 1, TILE_SIZE - 2, TILE_SIZE - 2);
-          ctx.fillStyle = '#b45309';
-          ctx.fillRect(px + 2, py + 2, TILE_SIZE - 4, 2);
+          if (!simpleResources) {
+            ctx.fillStyle = '#b45309';
+            ctx.fillRect(px + 2, py + 2, TILE_SIZE - 4, 2);
+          }
         } else if (p === PropType.WOOD_PALLET) {
           ctx.fillStyle = '#a16207';
           ctx.fillRect(px + 1, py + 2, TILE_SIZE - 2, TILE_SIZE - 3);
-          ctx.fillStyle = '#ca8a04';
-          ctx.fillRect(px + 2, py + 3, TILE_SIZE - 4, 1);
+          if (!simpleResources) {
+            ctx.fillStyle = '#ca8a04';
+            ctx.fillRect(px + 2, py + 3, TILE_SIZE - 4, 1);
+          }
         } else if (p === PropType.COUCH) {
           ctx.fillStyle = '#1e40af';
           ctx.fillRect(px + 1, py + 2, TILE_SIZE - 2, TILE_SIZE - 3);
-          ctx.fillStyle = '#60a5fa';
-          ctx.fillRect(px + 2, py + 2, TILE_SIZE - 4, 2);
+          if (!simpleResources) {
+            ctx.fillStyle = '#60a5fa';
+            ctx.fillRect(px + 2, py + 2, TILE_SIZE - 4, 2);
+          }
         } else if (p === PropType.BED) {
-          ctx.fillStyle = '#e2e8f0';
+          ctx.fillStyle = simpleResources ? '#ef4444' : '#e2e8f0';
           ctx.fillRect(px + 1, py + 1, TILE_SIZE - 2, TILE_SIZE - 2);
-          ctx.fillStyle = '#ef4444';
-          ctx.fillRect(px + 1, py + 4, TILE_SIZE - 2, TILE_SIZE - 5);
+          if (!simpleResources) {
+            ctx.fillStyle = '#ef4444';
+            ctx.fillRect(px + 1, py + 4, TILE_SIZE - 2, TILE_SIZE - 5);
+          }
         } else if (p === PropType.LAMP) {
           ctx.fillStyle = '#fde047';
           ctx.fillRect(px + 3, py + 2, 2, 3);
-          ctx.fillStyle = '#475569';
-          ctx.fillRect(px + 3, py + 5, 2, 2);
+          if (!simpleResources) {
+            ctx.fillStyle = '#475569';
+            ctx.fillRect(px + 3, py + 5, 2, 2);
+          }
         } else if (p === PropType.MEATBALL_VAT) {
-          ctx.fillStyle = '#64748b';
+          ctx.fillStyle = simpleResources ? '#b45309' : '#64748b';
           ctx.fillRect(px + 1, py + 1, TILE_SIZE - 2, TILE_SIZE - 2);
-          ctx.fillStyle = '#92400e';
-          ctx.fillRect(px + 2, py + 2, TILE_SIZE - 4, TILE_SIZE - 4);
-          ctx.fillStyle = '#d97706';
-          ctx.fillRect(px + 3, py + 3, 2, 2);
+          if (!simpleResources) {
+            ctx.fillStyle = '#92400e';
+            ctx.fillRect(px + 2, py + 2, TILE_SIZE - 4, TILE_SIZE - 4);
+            ctx.fillStyle = '#d97706';
+            ctx.fillRect(px + 3, py + 3, 2, 2);
+            if (!lowFps && zoom >= 1.45) {
+              // Zoomed-in simmering meatball vat details & gleaming silver ladle
+              const bub = ((this.simTime * 4 + tx) | 0) % 2;
+              ctx.fillStyle = '#fef3c7';
+              ctx.fillRect(px + 2.3 + bub, py + 2.5, 0.9, 0.9);
+              ctx.fillStyle = '#78350f';
+              ctx.fillRect(px + 4.3, py + 4.0, 1.3, 1.3);
+              ctx.fillStyle = '#e2e8f0';
+              ctx.fillRect(px + 5.2, py + 1.5, 0.9, 3.2);
+            }
+          }
+        } else if (p === PropType.ESCALATOR) {
+          const owner = this.propOwner[idx];
+          const n = owner >= 0 ? this.getNation(owner) : undefined;
+          ctx.fillStyle = '#090c12';
+          ctx.fillRect(px - 0.5, py - 0.5, TILE_SIZE + 1, TILE_SIZE + 1);
+          // Brushed steel frame & cyan side rails
+          ctx.fillStyle = '#334155';
+          ctx.fillRect(px, py, TILE_SIZE, TILE_SIZE);
+          ctx.fillStyle = n ? n.color : '#22d3ee';
+          ctx.fillRect(px, py, 1.4, TILE_SIZE);
+          ctx.fillRect(px + TILE_SIZE - 1.4, py, 1.4, TILE_SIZE);
+          // Animated scrolling amber stair treads
+          const stepShift = ((this.simTime * 5) | 0) % 2;
+          ctx.fillStyle = '#0f172a';
+          ctx.fillRect(px + 1.6, py + 0.5, TILE_SIZE - 3.2, TILE_SIZE - 1);
+          ctx.fillStyle = '#ffda1a';
+          ctx.fillRect(px + 2, py + 1 + stepShift, TILE_SIZE - 4, 1);
+          ctx.fillRect(px + 2, py + 3.5 + stepShift, TILE_SIZE - 4, 1);
+          ctx.fillStyle = '#22d3ee';
+          ctx.fillRect(px + 3, py + 6.2, 2, 1.2);
         } else if (p === PropType.BARRICADE_WALL) {
           // Swedish Furniture Barricade Walls with crisp grounded drop shadow
           const variant = this.propVariant[idx];
@@ -7611,6 +10078,17 @@ export class SimEngine {
           ctx.fillRect(px + 3, py + 5, 2, 3);
           ctx.fillStyle = occ ? '#fef08a' : '#475569';
           ctx.fillRect(px + 1, py + 3, 2, 2);
+          if (!lowFps && zoom >= 1.45) {
+            // Zoomed-in bunk mattresses & warm lantern inside open hut window
+            ctx.fillStyle = '#f8fafc';
+            ctx.fillRect(px + 5.5, py + 2.8, 2, 1.4);
+            ctx.fillStyle = '#ef4444';
+            ctx.fillRect(px + 5.5, py + 4.1, 2, 1.2);
+            if (occ) {
+              ctx.fillStyle = '#fbbf24';
+              ctx.fillRect(px + 1.4, py + 3.4, 1.2, 1.2);
+            }
+          }
         } else if (p === PropType.SPOTLIGHT) {
           const disabled = this.disabledLightMap[idx] > 0;
           ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
@@ -7683,6 +10161,35 @@ export class SimEngine {
           ctx.fillRect(px + 1, py + 3, 2, 2);
           ctx.fillStyle = occ ? '#fef08a' : '#1e1b18';
           ctx.fillRect(px + 3, py + 5, 2, 3);
+          if (!lowFps && zoom >= 1.45) {
+            // Zoomed-in IKEA Bistro Kitchen Interior! (checkered floor strip, steel counter, burners, meatball pot, plates & chef)
+            ctx.fillStyle = '#1e293b';
+            ctx.fillRect(px + 0.6, py + 1.2, TILE_SIZE - 1.2, 5.2);
+            // Checkered kitchen tile strip
+            ctx.fillStyle = '#e2e8f0';
+            ctx.fillRect(px + 1, py + 1.5, 1.5, 1.5);
+            ctx.fillRect(px + 4, py + 1.5, 1.5, 1.5);
+            // Stainless steel prep counter & plates
+            ctx.fillStyle = '#94a3b8';
+            ctx.fillRect(px + 0.8, py + 3.4, TILE_SIZE - 1.6, 1.4);
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(px + 5.6, py + 3.6, 1.3, 1.0);
+            // Twin glowing stove burners & copper meatball pot
+            ctx.fillStyle = occ ? '#fb923c' : '#9a3412';
+            ctx.fillRect(px + 1.2, py + 3.7, 1.3, 1.0);
+            ctx.fillStyle = '#b45309';
+            ctx.fillRect(px + 3.1, py + 3.2, 1.8, 1.4);
+            ctx.fillStyle = '#7c2d12';
+            ctx.fillRect(px + 3.4, py + 3.4, 1.2, 0.8);
+            if (occ) {
+              // Mini chef hat behind counter + animated steam puffs
+              ctx.fillStyle = '#ffffff';
+              ctx.fillRect(px + 3.4, py + 1.8, 1.3, 1.2);
+              const steamY = ((this.simTime * 4) | 0) % 2;
+              ctx.fillStyle = 'rgba(248, 250, 252, 0.78)';
+              ctx.fillRect(px + 3.6, py + 1.2 - steamY, 1.1, 0.9);
+            }
+          }
           if (occ) {
             ctx.fillStyle = 'rgba(226, 232, 240, 0.75)';
             ctx.fillRect(px + 6, py - 5 - ((this.simTime * 3) | 0) % 2, 1.5, 1.5);
@@ -7708,6 +10215,17 @@ export class SimEngine {
           ctx.fillRect(px + 1, py + 3, 2, 2);
           ctx.fillStyle = occ ? '#fde047' : '#0f172a';
           ctx.fillRect(px + 3, py + 5, 2, 3);
+          if (!lowFps && zoom >= 1.45) {
+            // Zoomed-in glowing forge anvil & sparks
+            ctx.fillStyle = '#1e293b';
+            ctx.fillRect(px + 5.3, py + 3.2, 2, 1.5);
+            ctx.fillStyle = '#fb923c';
+            ctx.fillRect(px + 1.3, py + 3.4, 1.4, 1.3);
+            if (occ && ((this.simTime * 6) | 0) % 2 === 0) {
+              ctx.fillStyle = '#fde047';
+              ctx.fillRect(px + 5.7, py + 2.4, 1, 1);
+            }
+          }
           if (occ) {
             ctx.fillStyle = 'rgba(203, 213, 225, 0.8)';
             ctx.fillRect(px + 5.5, py - 7 - ((this.simTime * 4) | 0) % 2, 2, 1.5);
@@ -7735,6 +10253,13 @@ export class SimEngine {
           ctx.fillRect(px + 3, py + 2, 2, 2);
           ctx.fillStyle = occ ? '#fde68a' : '#1e1b18';
           ctx.fillRect(px + 3, py + 5, 2, 3);
+          if (!lowFps && zoom >= 1.45) {
+            // Zoomed-in IKEA catalog bookshelves
+            ctx.fillStyle = '#f59e0b';
+            ctx.fillRect(px + 2.2, py + 2.5, 0.7, 1.5);
+            ctx.fillStyle = '#38bdf8';
+            ctx.fillRect(px + 5.1, py + 2.5, 0.7, 1.5);
+          }
         } else if (p === PropType.CART_DEPOT) {
           // 2.5D Logistics Cart Depot with bright cyan bay canopy, wide bay door & nation corner trim
           const owner = this.propOwner[idx];
@@ -7760,15 +10285,47 @@ export class SimEngine {
           ctx.fillStyle = occ ? '#fef08a' : '#38bdf8';
           ctx.fillRect(px + 1, py + 3, 1.5, 1.5);
           ctx.fillRect(px + 5.5, py + 3, 1.5, 1.5);
+        } else if (p === PropType.TECH_LAB) {
+          // 2.5D SCP-IKEA Technology Lab with cyan R&D roof, monitor glass & pulsing capacitor dish
+          const owner = this.propOwner[idx];
+          const n = owner >= 0 ? this.getNation(owner) : undefined;
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.48)';
+          ctx.fillRect(px - 1, py + 7, TILE_SIZE + 2, 2);
+          ctx.fillStyle = '#090c12';
+          ctx.fillRect(px - 1, py - 5, TILE_SIZE + 2, TILE_SIZE + 6);
+          // Steel lab facade
+          ctx.fillStyle = '#1e293b';
+          ctx.fillRect(px, py + 1, TILE_SIZE, TILE_SIZE - 1);
+          // Teal R&D dome roof + capacitor dish
+          ctx.fillStyle = '#0891b2';
+          ctx.fillRect(px - 1, py - 2, TILE_SIZE + 2, 3);
+          ctx.fillStyle = '#22d3ee';
+          ctx.fillRect(px + 1, py - 4, TILE_SIZE - 2, 2);
+          ctx.fillStyle = (this.simTime * 3) % 2 < 1 ? '#ffda1a' : '#67e8f9';
+          ctx.fillRect(px + 3, py - 5, 2, 1.5);
+          // Nation trim & glowing cyan laboratory window
+          ctx.fillStyle = n ? n.color : '#22d3ee';
+          ctx.fillRect(px, py - 1, 2, 1);
+          ctx.fillStyle = occ || hasTech(n, 'fluorescent_capacitor') ? '#67e8f9' : '#164e63';
+          ctx.fillRect(px + 1, py + 2, 2.5, 2);
+          ctx.fillStyle = occ ? '#fef08a' : '#0f172a';
+          ctx.fillRect(px + 4, py + 5, 2, 3);
+          if (!lowFps && zoom >= 1.45) {
+            // Zoomed-in cyan blueprint oscilloscope & capacitor bench
+            ctx.fillStyle = '#06b6d4';
+            ctx.fillRect(px + 1.2, py + 2.3, 2, 1.2);
+            ctx.fillStyle = '#ffda1a';
+            ctx.fillRect(px + 5.2, py + 2.5, 1.5, 1.5);
+          }
         }
 
         // Subtle doorway threshold glow + crisp tiny roof activity badge when occupied
         if (occ) {
           ctx.fillStyle = 'rgba(254, 240, 138, 0.38)';
           ctx.fillRect(px + 2, py + 7, 4, 2);
-          if (zoom >= 1.15) {
+          if (!lowFps && zoom >= 1.15) {
             const topY =
-              p === PropType.WATCHTOWER ? py - 10 : p === PropType.ARCHIVE ? py - 7 : py - 5;
+              p === PropType.WATCHTOWER ? py - 10 : p === PropType.ARCHIVE || p === PropType.TECH_LAB ? py - 7 : py - 5;
             ctx.save();
             ctx.font = '5px "Plus Jakarta Sans", sans-serif';
             ctx.textAlign = 'center';
@@ -7779,8 +10336,7 @@ export class SimEngine {
 
         // Miniature HP bar for damaged kingdom fortifications & structures
         if (
-          p >= PropType.BARRICADE_WALL &&
-          p <= PropType.CART_DEPOT &&
+          ((p >= PropType.BARRICADE_WALL && p <= PropType.CART_DEPOT) || p === PropType.TECH_LAB) &&
           this.propMaxHp[idx] > 0 &&
           this.propHp[idx] < this.propMaxHp[idx]
         ) {
@@ -7877,9 +10433,16 @@ export class SimEngine {
       const uy = u.y * TILE_SIZE;
 
       if (u.kind === UnitKind.CART_RUNNER) {
-        // Blue IKEA shopping cart + runner (or armored Siege Cart Ram)
+        // Blue IKEA shopping cart + runner, Golden Trade Caravan, or armored Siege Cart Ram
         const n = this.getNation(u.nationId);
-        if (u.isSiegeCart) {
+        if (u.isCaravan) {
+          ctx.fillStyle = '#92400e';
+          ctx.fillRect(ux - 4, uy - 3, 8, 5);
+          ctx.fillStyle = '#fbbf24';
+          ctx.fillRect(ux - 3.5, uy - 5, 7, 2.5);
+          ctx.fillStyle = '#fef3c7';
+          ctx.fillRect(ux - 2, uy - 4.5, 4, 1);
+        } else if (u.isSiegeCart) {
           ctx.fillStyle = '#334155';
           ctx.fillRect(ux - 4, uy - 3, 8, 6);
           ctx.fillStyle = '#1d4ed8';
@@ -7896,37 +10459,124 @@ export class SimEngine {
           ctx.fillStyle = n ? n.color : '#fff';
           ctx.fillRect(ux - 5, uy - 3, 2, 4);
         }
-      } else if (u.kind >= UnitKind.STAFF_NORMAL && u.kind <= UnitKind.STAFF_MANAGER) {
-        // SCP-3008-2 Tall Yellow-Shirted Faceless Staff (passive by day, glowing threat by night)
-        const isMgr = u.kind === UnitKind.STAFF_MANAGER;
-        const isCrw = u.kind === UnitKind.STAFF_CRAWLER;
-        const w = isMgr ? 7 : 4;
-        const h = isMgr ? 12 : isCrw ? 5 : 8;
-        ctx.fillStyle = u.hitFlash > 0 ? '#ffffff' : '#facc15';
-        ctx.fillRect(ux - w / 2, uy - h + 2, w, h - 2);
-        // Faceless pale head
-        ctx.fillStyle = u.hitFlash > 0 ? '#ffffff' : '#fef3c7';
-        ctx.fillRect(ux - (w - 1) / 2, uy - h - 1, w - 1, 3);
-        if (this.isNight) {
-          ctx.fillStyle = '#ef4444';
-          ctx.fillRect(ux - 1, uy - h + 1, 2, 1.5);
+      } else if (isStaffKind(u.kind)) {
+        // SCP-3008-2 Staff variants (wild OR Staff Kingdom citizens!)
+        const staffNation = u.nationId >= 0 ? this.getNation(u.nationId) : undefined;
+        if (u.kind === UnitKind.STAFF_WARDEN) {
+          ctx.fillStyle = u.hitFlash > 0 ? '#ffffff' : '#ca8a04';
+          ctx.fillRect(ux - 3, uy - 9, 6, 8);
+          ctx.fillStyle = '#334155';
+          ctx.fillRect(ux - 2.5, uy - 7, 5, 4); // riot vest
+          ctx.fillStyle = u.hitFlash > 0 ? '#ffffff' : '#fef3c7';
+          ctx.fillRect(ux - 2, uy - 11, 4, 3); // head
+          ctx.fillStyle = this.isNight && !u.pacified && !staffNation ? '#ef4444' : '#0f172a';
+          ctx.fillRect(ux - 1.5, uy - 10, 3, 1); // visor
+          ctx.fillStyle = '#94a3b8';
+          ctx.fillRect(ux - 4.5, uy - 7, 1.8, 5); // barricade shield
+          ctx.fillStyle = '#0f172a';
+          ctx.fillRect(ux - 3, uy - 1, 6, 2);
+        } else if (u.kind === UnitKind.STAFF_STALKER) {
+          ctx.fillStyle = u.hitFlash > 0 ? '#ffffff' : '#1e1b4b';
+          ctx.fillRect(ux - 1.5, uy - 9, 3, 8);
+          ctx.fillStyle = u.hitFlash > 0 ? '#ffffff' : '#fde68a';
+          ctx.fillRect(ux - 1.5, uy - 11, 3, 2.5);
+          if (this.isNight && !u.pacified && !staffNation) {
+            ctx.fillStyle = '#38bdf8';
+            ctx.fillRect(ux - 1, uy - 10, 0.8, 0.8);
+            ctx.fillRect(ux + 0.3, uy - 10, 0.8, 0.8);
+          }
+          ctx.fillStyle = '#090c12';
+          ctx.fillRect(ux - 1.5, uy - 1, 3, 2);
+        } else if (u.kind === UnitKind.STAFF_ANNOUNCER) {
+          ctx.fillStyle = u.hitFlash > 0 ? '#ffffff' : '#facc15';
+          ctx.fillRect(ux - 2, uy - 7, 4, 7);
+          ctx.fillStyle = '#dc2626';
+          ctx.fillRect(ux - 1, uy - 6, 2, 3); // PA lanyard/sash
+          ctx.fillStyle = u.hitFlash > 0 ? '#ffffff' : '#fef3c7';
+          ctx.fillRect(ux - 1.5, uy - 9.5, 3, 2.5);
+          // Megaphone horn
+          ctx.fillStyle = '#e2e8f0';
+          ctx.fillRect(ux + 2, uy - 7.5, 2.5, 2);
+          if (this.isNight && !u.pacified && !staffNation) {
+            ctx.strokeStyle = 'rgba(239, 68, 68, 0.65)';
+            ctx.lineWidth = 0.8;
+            ctx.beginPath();
+            ctx.arc(ux + 3, uy - 6.5, 2.5 + ((this.simTime * 5) % 3), -0.9, 0.9);
+            ctx.stroke();
+          }
+          ctx.fillStyle = '#1e293b';
+          ctx.fillRect(ux - 2, uy, 4, 2);
+        } else {
+          const isMgr = u.kind === UnitKind.STAFF_MANAGER;
+          const isCrw = u.kind === UnitKind.STAFF_CRAWLER;
+          const w = isMgr ? 7 : 4;
+          const h = isMgr ? 12 : isCrw ? 5 : 8;
+          ctx.fillStyle = u.hitFlash > 0 ? '#ffffff' : '#facc15';
+          ctx.fillRect(ux - w / 2, uy - h + 2, w, h - 2);
+          // Faceless pale head
+          ctx.fillStyle = u.hitFlash > 0 ? '#ffffff' : '#fef3c7';
+          ctx.fillRect(ux - (w - 1) / 2, uy - h - 1, w - 1, 3);
+          if (this.isNight && !u.pacified && !staffNation) {
+            ctx.fillStyle = '#ef4444';
+            ctx.fillRect(ux - 1, uy - h + 1, 2, 1.5);
+          }
+          // Dark trousers
+          ctx.fillStyle = '#1e293b';
+          ctx.fillRect(ux - w / 2, uy, w, 2);
         }
-        // Dark trousers
-        ctx.fillStyle = '#1e293b';
-        ctx.fillRect(ux - w / 2, uy, w, 2);
+        // Staff Kingdom Sash, Leader Crown & Weapon Overlay
+        if (staffNation && staffNation.alive) {
+          ctx.fillStyle = staffNation.color;
+          ctx.fillRect(ux - 2.2, uy - 6, 4.4, 2);
+          if (u.role === SurvivorRole.LEADER) {
+            ctx.fillStyle = '#fbbf24';
+            ctx.fillRect(ux - 2, uy - 13, 4, 2);
+            ctx.fillStyle = '#fef08a';
+            ctx.fillRect(ux - 1.5, uy - 14, 1, 1);
+            ctx.fillRect(ux + 0.5, uy - 14, 1, 1);
+          } else if (u.role === SurvivorRole.GENERAL) {
+            ctx.fillStyle = '#991b1b';
+            ctx.fillRect(ux - 2, uy - 12, 4, 1.8);
+          }
+        }
+        if (u.pacified) {
+          ctx.strokeStyle = 'rgba(52, 211, 153, 0.75)';
+          ctx.lineWidth = 0.8;
+          ctx.beginPath();
+          ctx.arc(ux, uy - 1, 4.5, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        if (u.weapon && u.weapon !== 'none') {
+          ctx.fillStyle =
+            u.weapon === 'plasma_stapler'
+              ? '#c084fc'
+              : u.weapon === 'halogen_rifle'
+                ? '#38bdf8'
+                : u.weapon === 'pa_megaphone'
+                  ? '#f43f5e'
+                  : '#fbbf24';
+          ctx.fillRect(ux + 2, uy - 6, 3.5, 1.4);
+        }
+        if (u.feverTimer > 0 && u.kind !== UnitKind.STAFF_ANNOUNCER) {
+          ctx.strokeStyle = 'rgba(239, 68, 68, 0.55)';
+          ctx.lineWidth = 0.8;
+          ctx.strokeRect(ux - 3.5, uy - 10, 7, 11);
+        }
       } else {
-        // Survivor / Leader / Guard / Saboteur
+        // Survivor / Leader / Guard / Saboteur / Mercenary
         const n = u.nationId >= 0 ? this.getNation(u.nationId) : undefined;
         const bodyColor =
           u.hitFlash > 0
             ? '#ffffff'
-            : u.kind === UnitKind.SABOTEUR
-              ? '#111827'
-              : n
-                ? n.color
-                : u.role === SurvivorRole.TRADER
-                  ? '#f59e0b'
-                  : '#94a3b8';
+            : u.isMercenary
+              ? '#9333ea'
+              : u.kind === UnitKind.SABOTEUR
+                ? '#111827'
+                : n
+                  ? n.color
+                  : u.role === SurvivorRole.TRADER
+                    ? '#f59e0b'
+                    : '#94a3b8';
 
         // Body
         ctx.fillStyle = bodyColor;
@@ -7958,9 +10608,31 @@ export class SimEngine {
           ctx.fillRect(ux + 1, uy - 9.5, 1, 1);
         }
 
-        // Guard visible makeshift gear (table-leg spear & pot-lid shield)
-        if (u.role === SurvivorRole.GUARD) {
-          ctx.fillStyle = n && n.techTier >= 3 ? '#e2e8f0' : '#a16207';
+        // Guard visible makeshift gear & crafted Firearms/Weapons
+        const drawnWeapon =
+          u.weapon && u.weapon !== 'none'
+            ? u.weapon
+            : u.role === SurvivorRole.GUARD || u.role === SurvivorRole.GENERAL
+              ? this.getNationBestWeapon(n, u.id).weapon
+              : 'none';
+        if (drawnWeapon === 'halogen_rifle' || drawnWeapon === 'plasma_stapler' || drawnWeapon === 'nailgun' || drawnWeapon === 'pa_megaphone') {
+          ctx.fillStyle = '#334155';
+          ctx.fillRect(ux + 1.5, uy - 3.4, 3.8, 1.3);
+          ctx.fillStyle =
+            drawnWeapon === 'plasma_stapler'
+              ? '#c084fc'
+              : drawnWeapon === 'halogen_rifle'
+                ? '#38bdf8'
+                : drawnWeapon === 'pa_megaphone'
+                  ? '#f43f5e'
+                  : '#fbbf24';
+          ctx.fillRect(ux + 4.3, uy - 3.5, 1.4, 1.5);
+          if (u.role === SurvivorRole.GUARD) {
+            ctx.fillStyle = n && n.techTier >= 3 ? '#94a3b8' : '#64748b';
+            ctx.fillRect(ux - 3.5, uy - 4, 2, 3);
+          }
+        } else if (u.role === SurvivorRole.GUARD) {
+          ctx.fillStyle = drawnWeapon === 'allen_spear' || (n && n.techTier >= 3) ? '#e2e8f0' : '#a16207';
           ctx.fillRect(ux + 2, uy - 7, 1, 7); // spear
           ctx.fillStyle = n && n.techTier >= 2 ? '#94a3b8' : '#64748b';
           ctx.fillRect(ux - 3.5, uy - 4, 2, 3); // pot-lid shield
@@ -8046,8 +10718,8 @@ export class SimEngine {
           ctx.drawImage(sprites.feverGlow, ux - 6, uy - 7, 12, 12);
         }
 
-        // Lightweight zero-lag emoji bubble when resting/talking (capped at 20 per frame)
-        if (u.chatTimer > 0 && u.chatEmoji && emojiDrawCount < 20) {
+        // Lightweight zero-lag emoji bubble when resting/talking (capped at 20 per frame; skipped on low FPS)
+        if (!lowFps && u.chatTimer > 0 && u.chatEmoji && emojiDrawCount < 20) {
           emojiDrawCount++;
           ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
           ctx.fillRect(ux - 4.5, uy - 17, 9, 8);
@@ -8107,10 +10779,10 @@ export class SimEngine {
 
     // Neutral Summit Lounge marker is drawn in crisp screen coordinates below
 
-    // 4. Projectiles & Particles
-    ctx.fillStyle = '#fef08a';
+    // 4. Projectiles, Particles & Store Anomaly Atmospheric Tint
     for (const pr of this.projectiles) {
-      ctx.fillRect(pr.x * TILE_SIZE - 1, pr.y * TILE_SIZE - 1, 2, 2);
+      ctx.fillStyle = pr.color || '#fef08a';
+      ctx.fillRect(pr.x * TILE_SIZE - 1.2, pr.y * TILE_SIZE - 1.2, 2.4, 2.4);
     }
 
     for (const pt of this.particles) {
@@ -8119,6 +10791,39 @@ export class SimEngine {
       ctx.fillRect(pt.x * TILE_SIZE, pt.y * TILE_SIZE, pt.size, pt.size);
     }
     ctx.globalAlpha = 1;
+
+    if (this.activeAnomaly) {
+      const aTint =
+        this.activeAnomaly.type === 'AISLE_FOG'
+          ? 'rgba(148, 163, 184, 0.14)'
+          : this.activeAnomaly.type === 'FLUORESCENT_SURGE'
+            ? 'rgba(56, 189, 248, 0.08)'
+            : this.activeAnomaly.type === 'CLEARANCE_STAMPEDE'
+              ? 'rgba(255, 218, 26, 0.06)'
+              : 'rgba(251, 191, 36, 0.06)';
+      ctx.fillStyle = aTint;
+      ctx.fillRect(minTx * TILE_SIZE, minTy * TILE_SIZE, (maxTx - minTx + 1) * TILE_SIZE, (maxTy - minTy + 1) * TILE_SIZE);
+    }
+
+    // 4b. Coordinated Staff Pack Rally Beacon (when survivors dominate & Staff organize strikes)
+    if (this.isNight && this.staffPack) {
+      const rx =
+        (this.staffPack.phase === 'GATHERING' ? this.staffPack.rallyX : this.staffPack.targetX) *
+        TILE_SIZE;
+      const ry =
+        (this.staffPack.phase === 'GATHERING' ? this.staffPack.rallyY : this.staffPack.targetY) *
+        TILE_SIZE;
+      const pulseR =
+        (this.staffPack.phase === 'GATHERING' ? 22 : 16) + Math.sin(this.simTime * 6) * 3;
+      ctx.strokeStyle =
+        this.staffPack.phase === 'GATHERING'
+          ? 'rgba(251, 191, 36, 0.72)'
+          : 'rgba(239, 68, 68, 0.72)';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.arc(rx, ry, pulseR, 0, Math.PI * 2);
+      ctx.stroke();
+    }
 
     // 5. Night Emergency Lighting Overlay (Zero shadowBlur!)
     const nightAlpha = this.computeNightAlpha();
@@ -8135,7 +10840,7 @@ export class SimEngine {
         maxTx,
         minTy,
         maxTy,
-        occupiedBuildings
+        lowFps ? undefined : occupiedBuildings
       );
     }
 
@@ -8331,6 +11036,16 @@ export class SimEngine {
       }
     }
 
+    for (let ti = 0; ti < this.techLabIndices.length; ti++) {
+      const idx = this.techLabIndices[ti];
+      if (this.prop[idx] !== PropType.TECH_LAB || this.disabledLightMap[idx] > 0) continue;
+      const owner = this.propOwner[idx];
+      const ownerNation = owner >= 0 ? this.getNation(owner) : undefined;
+      if (hasTech(ownerNation, 'fluorescent_capacitor')) {
+        drawCutout(idx, PropType.WATCHTOWER);
+      }
+    }
+
     if (occupiedBuildings && occupiedBuildings.size > 0) {
       occupiedBuildings.forEach((_val, idx) => {
         const p = this.prop[idx];
@@ -8360,7 +11075,7 @@ export class SimEngine {
       totalUnits++;
       if (u.kind === UnitKind.SURVIVOR) survivorCount++;
       else if (u.kind === UnitKind.CART_RUNNER) cartCount++;
-      else if (u.kind >= UnitKind.STAFF_NORMAL && u.kind <= UnitKind.STAFF_MANAGER) staffCount++;
+      else if (isStaffKind(u.kind)) staffCount++;
     }
 
     const cycleProgress = this.isNight
@@ -8394,6 +11109,8 @@ export class SimEngine {
       speed: this.speed,
       summitActive: this.summitActiveTimer > 0,
       auditNight: this.isNight && this.day % 10 === 0,
+      activeAnomaly: this.activeAnomaly ? { ...this.activeAnomaly } : null,
+      allowWildStaffKingdoms: this.allowWildStaffKingdoms,
     };
   }
 }

@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express, { type Request, type Response } from 'express';
+import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
@@ -31,6 +32,7 @@ const DIPLOMATIC_ACTIONS = [
 interface SummitNationInput {
   id: number;
   name: string;
+  species?: 'human' | 'staff';
   gov: string;
   ideology: string;
   techTier: number;
@@ -38,6 +40,10 @@ interface SummitNationInput {
   meatballs: number;
   scrap: number;
   wrenches: number;
+  firearms?: number;
+  civilianGoods?: number;
+  isUnion?: boolean;
+  unionMembers?: string[];
   happiness: number;
   tax: string;
   threat: number;
@@ -119,6 +125,7 @@ async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
 
 async function startServer() {
   const app = express();
+  const httpServer = http.createServer(app);
   app.use(express.json({ limit: '1mb' }));
 
   app.get('/api/health', (_req: Request, res: Response) => {
@@ -165,6 +172,7 @@ async function startServer() {
     const body = req.body as {
       day?: number;
       isNight?: boolean;
+      activeAnomaly?: { label?: string; description?: string } | null;
       nations?: SummitNationInput[];
       history?: SummitHistoryEntry[];
       topic?: string;
@@ -191,6 +199,7 @@ async function startServer() {
 The nation leaders have walked to the Neutral Showroom Lounge and are sitting down on showroom couches around a coffee table to talk directly with one another.
 
 Current Store State (Day ${body.day ?? 1}, ${body.isNight ? 'Store Closed / Spotlights On' : 'Store Open'}):
+${body.activeAnomaly?.label ? `Active Store Anomaly: ${body.activeAnomaly.label} (${body.activeAnomaly.description || ''})` : 'Active Store Anomaly: None'}
 Remaining Summit Time: ${remainingSec}s of ${totalDurationSec}s max (session limit <= 5 minutes).
 ${isClosing ? 'CLOSING TURN: Time is nearly up. The speaking leader should deliver a concise closing remark or final deal/ultimatum to conclude the lounge talk.' : ''}
 ${body.topic?.trim() ? `Moderator / Cosmic Voice Topic: "${body.topic.trim()}"` : ''}
@@ -204,7 +213,7 @@ ${history.length === 0 ? '(The leaders have just sat down on the showroom couche
 
 Instructions:
 1. Pick speakerNationId from [${nations.map((n) => n.id).join(', ')}] — prefer a different leader from the last speaker (${lastSpeakerId ?? 'none'}) so the leaders actually converse back-and-forth.
-2. Write 1 to 3 natural, witty, darkly comedic yet politically sharp sentences in-character as that leader addressing the other seated leaders by name or nation. Reference real IKEA survival details (meatballs, Allen wrenches, Billy shelves, shopping carts, Night Staff, spotlights, current wars or trade pacts).
+2. Write 1 to 3 natural, witty, darkly comedic yet politically sharp sentences in-character as that leader addressing the other seated leaders by name or nation. Reference real IKEA survival details (meatballs, Allen wrenches, Billy shelves, shopping carts, Maintenance Escalators, Tech Lab firearms/nailguns, catalog civilian goods, Grand Unions, Staff Kingdoms if species==="staff", Night Staff, spotlights, or active anomalies).
 3. If the conversation naturally calls for a concrete diplomatic breakthrough or breakdown right now (and not on every turn—only when earned by the dialogue), include diplomaticAction using ONLY valid nation IDs from the seated list and allowed types: ${DIPLOMATIC_ACTIONS.join(', ')}. For REFORM_GOV, newGovernment must be one of: ${GOVERNMENTS.join(', ')}.
 4. Set shouldConclude to true ONLY if this is a closing turn or the leaders have clearly wrapped up all business early.`;
 
@@ -500,7 +509,10 @@ Respond in character (1-2 sentences) and optionally adjust taxRate, newGovernmen
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        ws: { server: httpServer },
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -513,7 +525,7 @@ Respond in character (1-2 sentences) and optionally adjust taxRate, newGovernmen
   }
 
   const port = Number(process.env.PORT) || 3000;
-  app.listen(port, '0.0.0.0', () => {
+  httpServer.listen(port, '0.0.0.0', () => {
     console.log(`SCP-3008 server running on http://0.0.0.0:${port}`);
   });
 }

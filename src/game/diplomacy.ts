@@ -1,5 +1,6 @@
 import { GOVERNMENTS, IKEA_QUOTES } from './constants';
 import {
+  ActiveAnomaly,
   GeminiDiplomaticAction,
   GeminiSummitResponse,
   GovernmentType,
@@ -75,9 +76,11 @@ export interface SummitLoungeMessage {
 export interface SummitLoungeTurnRequest {
   day: number;
   isNight: boolean;
+  activeAnomaly?: ActiveAnomaly | null;
   nations: Array<{
     id: number;
     name: string;
+    species?: 'human' | 'staff';
     gov: string;
     ideology: string;
     techTier: number;
@@ -85,9 +88,13 @@ export interface SummitLoungeTurnRequest {
     meatballs: number;
     scrap: number;
     wrenches: number;
+    firearms?: number;
+    civilianGoods?: number;
     happiness: number;
     tax: string;
     threat: number;
+    isUnion?: boolean;
+    unionMembers?: string[];
     leaderName: string;
     leaderTraits: string[];
     seated: boolean;
@@ -135,6 +142,7 @@ export function buildCompactSummitSnapshot(
       .map((n) => ({
         id: n.id,
         name: n.name,
+        species: n.species || 'human',
         gov: n.government,
         ideology: n.ideology,
         techTier: n.techTier,
@@ -142,6 +150,10 @@ export function buildCompactSummitSnapshot(
         meatballs: Math.round(n.meatballs),
         scrap: Math.round(n.scrap),
         wrenches: Math.round(n.allenWrenches),
+        firearms: Math.round(n.firearms || 0),
+        civilianGoods: Math.round(n.civilianGoods || 0),
+        isUnion: Boolean(n.isUnion),
+        unionMembers: n.unionMembers || [],
         happiness: Math.round(n.happiness),
         tax: n.taxRate,
         threat: Math.round(n.threatScore),
@@ -268,7 +280,26 @@ function runHeuristicSummitLoungeTurn(
     }
   }
 
+  const anomalyLine = payload.activeAnomaly
+    ? `With ${payload.activeAnomaly.label} sweeping the store right now, ${other.leaderName}, we ought to coordinate escalators and defense.`
+    : null;
+  const staffLine =
+    speaker.species === 'staff'
+      ? `As a sovereign SCP-3008-2 Staff realm, ${speaker.name} keeps the aisles tidy and our ${speaker.firearms || 0} PA weapons ready—respect our yellow-polo borders, ${other.leaderName}.`
+      : null;
+  const unionLine = speaker.isUnion
+    ? `Our Grand Union (${(speaker.unionMembers || [speaker.name]).slice(0, 3).join(' + ')}) has linked trade corridors and ${speaker.civilianGoods || 0} catalog goods across the store.`
+    : null;
+  const techLine =
+    (speaker.firearms || 0) > 0 || (speaker.civilianGoods || 0) > 0
+      ? `Our Tech Labs forged ${speaker.firearms || 0} ranged weapons and ${speaker.civilianGoods || 0} catalog goods—our escalators keep the ${speaker.pop} citizens moving fast!`
+      : null;
+
   const lines = [
+    ...(anomalyLine ? [anomalyLine] : []),
+    ...(staffLine ? [staffLine] : []),
+    ...(unionLine ? [unionLine] : []),
+    ...(techLine ? [techLine] : []),
     `The showroom lights hum loudly today, ${other.leaderName}. With ${speaker.pop} citizens in ${speaker.name}, our top priority is keeping Night Staff away from our huts.`,
     `Pass the lingonberry cup, ${other.leaderName}. Between ${speaker.name}'s ${speaker.wrenches} wrenches and your carts, nobody in Sector 4 can match us.`,
     `Our ${speaker.gov} has ${speaker.happiness}% approval, though the ${speaker.tax} tax rate keeps our builders grumbling over Billy shelves.`,

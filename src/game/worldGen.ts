@@ -13,6 +13,7 @@ import {
 } from './constants';
 import {
   BiomeType,
+  BuildingSpacing,
   Nation,
   PropType,
   SurvivorRole,
@@ -419,6 +420,7 @@ export function generateIkeaWorld(
       cartCooldown: 4,
       armyCount: 4,
       armyCap: gov === 'Iron Dictatorship' ? 6 : 4,
+      buildingSpacing: (['Spaced', 'Crowded', 'Balanced'] as BuildingSpacing[])[i % 3],
       researchedTechs: [],
       activeResearchId: null,
       researchPoints: 0,

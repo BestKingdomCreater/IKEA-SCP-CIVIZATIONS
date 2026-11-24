@@ -19,6 +19,12 @@ class SoundManager {
   private stepIndex = 0;
   private schedulerTimer: number | null = null;
   private nextNoteTime = 0;
+  private lastShotAt = 0;
+  private lastHitAt = 0;
+  private lastDeathAt = 0;
+  private lastBuildAt = 0;
+  private lastWarpAt = 0;
+  private lastPackAt = 0;
 
   // Cheerful IKEA Showroom Muzak melody (MIDI note numbers, 0 = rest)
   // F major pentatonic/lydian bouncy mallsoft loop (16 eighth-note steps)
@@ -62,9 +68,17 @@ class SoundManager {
       if (!AudioCtx) return null;
       this.ctx = new AudioCtx();
 
+      const fxCompressor = this.ctx.createDynamicsCompressor();
+      fxCompressor.threshold.value = -24;
+      fxCompressor.knee.value = 12;
+      fxCompressor.ratio.value = 6;
+      fxCompressor.attack.value = 0.005;
+      fxCompressor.release.value = 0.12;
+      fxCompressor.connect(this.ctx.destination);
+
       this.fxGain = this.ctx.createGain();
-      this.fxGain.gain.value = this.enabled ? 1 : 0;
-      this.fxGain.connect(this.ctx.destination);
+      this.fxGain.gain.value = this.enabled ? 0.85 : 0;
+      this.fxGain.connect(fxCompressor);
 
       this.musicGain = this.ctx.createGain();
       this.musicGain.gain.value = this.musicEnabled ? 0.42 : 0;
@@ -124,7 +138,7 @@ class SoundManager {
   public setFxEnabled(on: boolean): void {
     this.enabled = on;
     if (this.fxGain && this.ctx) {
-      this.fxGain.gain.setTargetAtTime(on ? 1 : 0, this.ctx.currentTime, 0.05);
+      this.fxGain.gain.setTargetAtTime(on ? 0.85 : 0, this.ctx.currentTime, 0.05);
     }
   }
 
@@ -259,8 +273,159 @@ class SoundManager {
 
   public playPower(): void {
     if (!this.enabled) return;
-    this.playChime(440, 0.1, 'sine', 0.04);
-    setTimeout(() => this.playChime(660, 0.12, 'sine', 0.03), 50);
+    this.playChime(440, 0.1, 'sine', 0.036);
+    setTimeout(() => this.playChime(660, 0.12, 'sine', 0.028), 50);
+  }
+
+  public playShot(
+    weapon: 'nailgun' | 'halogen_rifle' | 'plasma_stapler' | 'pa_megaphone' | 'turret'
+  ): void {
+    if (!this.enabled) return;
+    const nowMs = performance.now();
+    if (nowMs - this.lastShotAt < 95) return;
+    this.lastShotAt = nowMs;
+
+    const ctx = this.ensureContext();
+    if (!ctx || !this.fxGain || ctx.state !== 'running') return;
+    try {
+      const t = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      if (weapon === 'nailgun') {
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(420, t);
+        osc.frequency.exponentialRampToValueAtTime(145, t + 0.045);
+        gain.gain.setValueAtTime(0.017, t);
+        gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.045);
+        osc.connect(gain);
+        gain.connect(this.fxGain);
+        osc.start(t);
+        osc.stop(t + 0.05);
+      } else if (weapon === 'halogen_rifle') {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(920, t);
+        osc.frequency.exponentialRampToValueAtTime(290, t + 0.065);
+        gain.gain.setValueAtTime(0.017, t);
+        gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.065);
+        osc.connect(gain);
+        gain.connect(this.fxGain);
+        osc.start(t);
+        osc.stop(t + 0.07);
+      } else if (weapon === 'plasma_stapler') {
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(1180, t);
+        osc.frequency.exponentialRampToValueAtTime(240, t + 0.075);
+        gain.gain.setValueAtTime(0.019, t);
+        gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.075);
+        osc.connect(gain);
+        gain.connect(this.fxGain);
+        osc.start(t);
+        osc.stop(t + 0.08);
+      } else if (weapon === 'pa_megaphone') {
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(260, t);
+        osc.frequency.exponentialRampToValueAtTime(165, t + 0.08);
+        const lp = ctx.createBiquadFilter();
+        lp.type = 'lowpass';
+        lp.frequency.value = 900;
+        gain.gain.setValueAtTime(0.015, t);
+        gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.08);
+        osc.connect(lp);
+        lp.connect(gain);
+        gain.connect(this.fxGain);
+        osc.start(t);
+        osc.stop(t + 0.085);
+      } else {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(700, t);
+        osc.frequency.exponentialRampToValueAtTime(340, t + 0.055);
+        gain.gain.setValueAtTime(0.014, t);
+        gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.055);
+        osc.connect(gain);
+        gain.connect(this.fxGain);
+        osc.start(t);
+        osc.stop(t + 0.06);
+      }
+    } catch {
+      // Ignore audio failures
+    }
+  }
+
+  public playMeleeHit(): void {
+    if (!this.enabled) return;
+    const nowMs = performance.now();
+    if (nowMs - this.lastHitAt < 135) return;
+    this.lastHitAt = nowMs;
+
+    const ctx = this.ensureContext();
+    if (!ctx || !this.fxGain || ctx.state !== 'running') return;
+    try {
+      const t = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(165, t);
+      osc.frequency.exponentialRampToValueAtTime(68, t + 0.045);
+      gain.gain.setValueAtTime(0.013, t);
+      gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.045);
+      osc.connect(gain);
+      gain.connect(this.fxGain);
+      osc.start(t);
+      osc.stop(t + 0.05);
+    } catch {
+      // Ignore
+    }
+  }
+
+  public playDeath(isStaff: boolean): void {
+    if (!this.enabled) return;
+    const nowMs = performance.now();
+    if (nowMs - this.lastDeathAt < 150) return;
+    this.lastDeathAt = nowMs;
+
+    const ctx = this.ensureContext();
+    if (!ctx || !this.fxGain || ctx.state !== 'running') return;
+    try {
+      const t = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = isStaff ? 'sine' : 'triangle';
+      osc.frequency.setValueAtTime(isStaff ? 380 : 145, t);
+      osc.frequency.exponentialRampToValueAtTime(isStaff ? 170 : 62, t + 0.07);
+      gain.gain.setValueAtTime(isStaff ? 0.012 : 0.013, t);
+      gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.07);
+      osc.connect(gain);
+      gain.connect(this.fxGain);
+      osc.start(t);
+      osc.stop(t + 0.075);
+    } catch {
+      // Ignore
+    }
+  }
+
+  public playBuild(): void {
+    if (!this.enabled) return;
+    const nowMs = performance.now();
+    if (nowMs - this.lastBuildAt < 160) return;
+    this.lastBuildAt = nowMs;
+    this.playChime(290, 0.045, 'triangle', 0.015);
+  }
+
+  public playEscalator(): void {
+    if (!this.enabled) return;
+    const nowMs = performance.now();
+    if (nowMs - this.lastWarpAt < 240) return;
+    this.lastWarpAt = nowMs;
+    this.playChime(540, 0.07, 'sine', 0.014);
+  }
+
+  public playStaffCoordinated(): void {
+    if (!this.enabled) return;
+    const nowMs = performance.now();
+    if (nowMs - this.lastPackAt < 1500) return;
+    this.lastPackAt = nowMs;
+    this.playChime(261, 0.14, 'triangle', 0.022);
+    setTimeout(() => this.playChime(196, 0.2, 'triangle', 0.02), 110);
   }
 }
 

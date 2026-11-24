@@ -12,7 +12,7 @@ import {
   X,
 } from 'lucide-react';
 import { SummitLoungeMessage } from '../game/diplomacy';
-import { Nation } from '../game/types';
+import { ActiveAnomaly, Nation } from '../game/types';
 
 export type SummitDurationSec = 60 | 120 | 180 | 300;
 
@@ -25,6 +25,7 @@ interface SummitLoungeModalProps {
   nations: Nation[];
   leaderSeats: LeaderSeatInfo[];
   messages: SummitLoungeMessage[];
+  activeAnomaly?: ActiveAnomaly | null;
   sessionActive: boolean;
   sessionPaused: boolean;
   loadingTurn: boolean;
@@ -61,6 +62,7 @@ export const SummitLoungeModal: React.FC<SummitLoungeModalProps> = ({
   nations,
   leaderSeats,
   messages,
+  activeAnomaly,
   sessionActive,
   sessionPaused,
   loadingTurn,
@@ -258,11 +260,23 @@ export const SummitLoungeModal: React.FC<SummitLoungeModalProps> = ({
                         style={{ backgroundColor: nation.color }}
                       />
                       <div className="min-w-0">
-                        <div className="text-[11px] font-semibold text-slate-100 truncate">
-                          {nation.leader.name}
+                        <div className="flex items-center gap-1 min-w-0">
+                          <span className="text-[11px] font-semibold text-slate-100 truncate">
+                            {nation.leader.name}
+                          </span>
+                          {nation.species === 'staff' && (
+                            <span className="px-1 py-0.2 rounded bg-yellow-500/20 text-yellow-300 text-[9px] font-semibold shrink-0">
+                              Staff
+                            </span>
+                          )}
+                          {nation.isUnion && (
+                            <span className="px-1 py-0.2 rounded bg-amber-500/20 text-amber-300 text-[9px] font-semibold shrink-0">
+                              Union
+                            </span>
+                          )}
                         </div>
                         <div className="text-[10px] text-slate-400 truncate">
-                          {nation.name}
+                          {nation.name} · T{nation.techTier}
                         </div>
                       </div>
                     </div>
@@ -294,6 +308,15 @@ export const SummitLoungeModal: React.FC<SummitLoungeModalProps> = ({
 
         {/* Live Conversation Transcript */}
         <div className="flex-1 min-h-[120px] overflow-y-auto px-4 py-3 space-y-2.5">
+          {activeAnomaly && (
+            <div className="rounded-lg border border-cyan-500/40 bg-cyan-950/35 px-2.5 py-2 text-[11px] text-cyan-200 flex items-center justify-between gap-2">
+              <span className="font-semibold truncate">Store Anomaly: {activeAnomaly.label}</span>
+              <span className="font-mono-tabular text-[10px] text-cyan-300 shrink-0">
+                {Math.ceil(activeAnomaly.remainingSec)}s
+              </span>
+            </div>
+          )}
+
           {!hasGeminiKey && (
             <div className="rounded-lg border border-slate-700 bg-slate-900/80 p-2.5 flex items-center justify-between gap-2 text-[11px] text-slate-300">
               <span>

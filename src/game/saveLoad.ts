@@ -1,4 +1,4 @@
-import { ChronicleEntry, HallOfRecords, Nation, NewsItem, Unit } from './types';
+import { ActiveAnomaly, ChronicleEntry, HallOfRecords, Nation, NewsItem, Unit } from './types';
 
 export interface SerializedWorldV1 {
   version: 1;
@@ -22,6 +22,8 @@ export interface SerializedWorldV1 {
   summitActiveTimer: number;
   lastAutoSummitDay: number;
   summitDiscussed: boolean;
+  allowWildStaffKingdoms?: boolean;
+  activeAnomaly?: ActiveAnomaly | null;
   camera: { x: number; y: number; zoom: number };
   nations: Nation[];
   units: Unit[];

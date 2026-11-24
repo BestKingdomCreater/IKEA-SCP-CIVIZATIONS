@@ -158,6 +158,8 @@ export default function App() {
     speed: 1,
     summitActive: false,
     auditNight: false,
+    activeAnomaly: null,
+    allowWildStaffKingdoms: false,
   }));
 
   const panToTile = useCallback((tx: number, ty: number) => {
@@ -255,16 +257,22 @@ export default function App() {
         const payload = {
           day: eng.day,
           isNight: eng.isNight,
+          activeAnomaly: eng.activeAnomaly,
           nations: aliveNations.map((n) => ({
             id: n.id,
             name: n.name,
             gov: n.government,
             ideology: n.ideology,
+            species: n.species,
             techTier: n.techTier,
             pop: n.population,
             meatballs: Math.round(n.meatballs),
             scrap: Math.round(n.scrap),
             wrenches: Math.round(n.allenWrenches),
+            firearms: Math.round(n.firearms ?? 0),
+            civilianGoods: Math.round(n.civilianGoods ?? 0),
+            isUnion: Boolean(n.isUnion),
+            unionMembers: n.unionMembers,
             happiness: Math.round(n.happiness),
             tax: n.taxRate,
             threat: Math.round(n.threatScore),
@@ -508,6 +516,10 @@ export default function App() {
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
 
+    let currentDpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    let lowFpsFrames = 0;
+    let highFpsFrames = 0;
+
     const updateCanvasSize = () => {
       const canvas = canvasRef.current;
       const container = containerRef.current;
@@ -515,9 +527,8 @@ export default function App() {
       const rect = container.getBoundingClientRect();
       const w = Math.max(320, Math.floor(rect.width));
       const h = Math.max(240, Math.floor(rect.height));
-      const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
-      canvas.width = Math.floor(w * dpr);
-      canvas.height = Math.floor(h * dpr);
+      canvas.width = Math.floor(w * currentDpr);
+      canvas.height = Math.floor(h * currentDpr);
       canvas.style.width = `${w}px`;
       canvas.style.height = `${h}px`;
       setViewSize({ w, h });
@@ -533,13 +544,34 @@ export default function App() {
     let lastHudSync = 0;
     let fpsSmooth = 60;
     const FIXED_DT = 1 / 30;
-    const MAX_SUBSTEPS = 12;
 
     const frame = (now: number) => {
       const rawDt = Math.min(0.1, (now - lastTime) / 1000);
       lastTime = now;
       if (rawDt > 0.001) {
         fpsSmooth = fpsSmooth * 0.9 + (1 / rawDt) * 0.1;
+      }
+      eng.currentFps = fpsSmooth;
+
+      // Dynamic DPR governor keeps render thread >= 30 FPS on dense worlds or 10x speed
+      const maxNativeDpr = Math.min(window.devicePixelRatio || 1, 1.5);
+      if (fpsSmooth < 34) {
+        lowFpsFrames++;
+        highFpsFrames = 0;
+        if (lowFpsFrames >= 60 && currentDpr > 1.0) {
+          currentDpr = 1.0;
+          updateCanvasSize();
+        }
+      } else if (fpsSmooth > 48) {
+        highFpsFrames++;
+        lowFpsFrames = 0;
+        if (highFpsFrames >= 180 && currentDpr < maxNativeDpr) {
+          currentDpr = maxNativeDpr;
+          updateCanvasSize();
+        }
+      } else {
+        lowFpsFrames = 0;
+        highFpsFrames = 0;
       }
 
       const panSpeed = (520 / eng.camera.zoom) * rawDt;
@@ -562,10 +594,11 @@ export default function App() {
 
       if (!eng.paused && eng.speed > 0) {
         accumulator = Math.min(FIXED_DT * 3, accumulator + rawDt * eng.speed);
-        const simBudgetMs = fpsSmooth < 45 ? 5.5 : 8.5;
+        const simBudgetMs = fpsSmooth < 34 ? 3.5 : fpsSmooth < 44 ? 5.0 : 8.0;
+        const maxSubsteps = fpsSmooth < 32 ? 2 : fpsSmooth < 38 ? 4 : 10;
         const simStart = performance.now();
         let steps = 0;
-        while (accumulator >= FIXED_DT && steps < MAX_SUBSTEPS) {
+        while (accumulator >= FIXED_DT && steps < maxSubsteps) {
           eng.step(FIXED_DT);
           accumulator -= FIXED_DT;
           steps++;
@@ -574,11 +607,11 @@ export default function App() {
             break;
           }
         }
-        if (steps >= MAX_SUBSTEPS) {
+        if (steps >= maxSubsteps) {
           accumulator = 0;
         }
       }
-      eng.particleScale = fpsSmooth < 45 ? 0.35 : eng.isMobileViewport ? 0.5 : 1.0;
+      eng.particleScale = fpsSmooth < 35 ? 0.25 : fpsSmooth < 45 ? 0.4 : eng.isMobileViewport ? 0.5 : 1.0;
 
       if (followUnitIdRef.current !== null) {
         const targetUnit = eng.units.find((u) => u.alive && u.id === followUnitIdRef.current);
@@ -599,10 +632,9 @@ export default function App() {
       if (canvas) {
         const ctx = canvas.getContext('2d');
         if (ctx) {
-          const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
-          const cssW = canvas.width / dpr;
-          const cssH = canvas.height / dpr;
-          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          const cssW = canvas.width / currentDpr;
+          const cssH = canvas.height / currentDpr;
+          ctx.setTransform(currentDpr, 0, 0, currentDpr, 0, 0);
           eng.render(ctx, cssW, cssH);
         }
       }
@@ -881,9 +913,22 @@ export default function App() {
           tool === 'power_lightning' ||
           tool === 'power_time_shift' ||
           tool === 'power_restock' ||
+          tool === 'power_anomaly' ||
+          tool === 'power_supply_drop' ||
+          tool === 'power_pacify_staff' ||
+          tool === 'power_prosperity' ||
+          tool === 'power_vortex' ||
+          tool === 'power_enlighten' ||
           tool === 'build_spotlight' ||
           tool === 'build_watchtower' ||
-          tool === 'build_bistro';
+          tool === 'build_bistro' ||
+          tool === 'build_tech_lab' ||
+          tool === 'build_escalator' ||
+          tool === 'spawn_warden' ||
+          tool === 'spawn_stalker' ||
+          tool === 'spawn_announcer' ||
+          tool === 'spawn_caravan' ||
+          tool === 'spawn_mercenary';
         if (isSingleTapPower) return;
         const throttleMs = tool.startsWith('paint_') || tool === 'build_wall' ? 25 : 110;
         if (now - lastPaintTimeRef.current >= throttleMs) {
@@ -956,11 +1001,17 @@ export default function App() {
       ? hud.nations.find((n) => n.id === selectedNationId)
       : undefined;
 
+  const livingNations = hud.nations.filter((n) => n.alive);
+
   useEffect(() => {
     if ((!selectedNation || !selectedNation.alive) && showResearchTree) {
-      setShowResearchTree(false);
+      if (livingNations.length > 0) {
+        setSelectedNationId(livingNations[0].id);
+      } else {
+        setShowResearchTree(false);
+      }
     }
-  }, [selectedNation, showResearchTree]);
+  }, [selectedNation, showResearchTree, livingNations]);
 
   const inspectedUnitNation =
     inspectedUnit && inspectedUnit.nationId >= 0
@@ -1009,6 +1060,15 @@ export default function App() {
         onOpenCustomKingdom={() => {
           setPlacementError(null);
           setShowCustomKingdomModal(true);
+        }}
+        onOpenTechCenter={() => {
+          const living = hud.nations.filter((n) => n.alive);
+          if (living.length === 0) return;
+          if (!selectedNation || !selectedNation.alive) {
+            const topNation = [...living].sort((a, b) => b.population - a.population)[0];
+            setSelectedNationId(topNation.id);
+          }
+          setShowResearchTree(true);
         }}
         onToggleSummitLounge={handleToggleSummitLounge}
         onResetWorld={() => {
@@ -1120,6 +1180,12 @@ export default function App() {
               engineRef.current.renameNation(nid, newName);
               setHud(engineRef.current.getHudSnapshot(hud.fps));
             }}
+            onChangeBuildingSpacing={(nid, spacing) => {
+              if (!engineRef.current) return;
+              soundFX.playChime(520, 0.05);
+              engineRef.current.setNationBuildingSpacing(nid, spacing);
+              setHud(engineRef.current.getHudSnapshot(hud.fps));
+            }}
             onSpawnUnitsForNation={(nid, unitType) => {
               if (!engineRef.current) return;
               soundFX.playChime(580, 0.06);
@@ -1141,13 +1207,21 @@ export default function App() {
           />
         )}
 
-        {/* Nation Research Tree Modal */}
+        {/* Nation Research & SCP-IKEA Technology Center Modal */}
         {showResearchTree && selectedNation && selectedNation.alive && (
           <ResearchTreeModal
             nation={selectedNation}
+            nations={livingNations}
+            onSelectNation={(nid) => setSelectedNationId(nid)}
             onFocusTech={(techId: TechId) => {
               if (!engineRef.current) return;
               engineRef.current.setNationActiveResearch(selectedNation.id, techId);
+              setHud(engineRef.current.getHudSnapshot(hud.fps));
+            }}
+            onBoostResearch={() => {
+              if (!engineRef.current) return;
+              soundFX.playChime(680, 0.07);
+              engineRef.current.boostNationResearch(selectedNation.id, 20);
               setHud(engineRef.current.getHudSnapshot(hud.fps));
             }}
             onGrantTech={(techId: TechId) => {
@@ -1166,6 +1240,7 @@ export default function App() {
             nations={hud.nations}
             leaderSeats={leaderSeats}
             messages={summitMessages}
+            activeAnomaly={hud.activeAnomaly}
             sessionActive={summitSessionActive}
             sessionPaused={summitSessionPaused}
             loadingTurn={summitTurnLoading}
@@ -1207,6 +1282,19 @@ export default function App() {
               setInspectedUnit(null);
               setFollowUnitId(null);
               setSelectedNationId(nid);
+            }}
+            onUnitAction={(unitId, action) => {
+              const eng = engineRef.current;
+              if (!eng) return;
+              const res = eng.giveUnitGift(unitId, action);
+              if (res.ok) {
+                soundFX.playPower();
+              } else {
+                soundFX.playChime(220, 0.08, 'sawtooth');
+              }
+              const updated = eng.units.find((u) => u.alive && u.id === unitId);
+              setInspectedUnit(updated ? { ...updated } : null);
+              setHud(eng.getHudSnapshot(hud.fps));
             }}
           />
         )}
@@ -1283,6 +1371,7 @@ export default function App() {
           worldPreset={worldPreset}
           soundEnabled={soundEnabled}
           musicEnabled={musicEnabled}
+          allowWildStaffKingdoms={Boolean(hud.allowWildStaffKingdoms)}
           isMobile={isPhone}
           onChangeMaxPop={setMaxPop}
           onChangeWorldPreset={(preset) => setWorldPreset(preset)}
@@ -1290,6 +1379,11 @@ export default function App() {
           onToggleMusic={() => {
             soundFX.unlockAndStartMusic();
             setMusicEnabled((m) => !m);
+          }}
+          onToggleWildStaffKingdoms={() => {
+            if (!engineRef.current) return;
+            engineRef.current.setAllowWildStaffKingdoms(!engineRef.current.allowWildStaffKingdoms);
+            setHud(engineRef.current.getHudSnapshot(hud.fps));
           }}
           onResetWorld={(preset) => {
             finishSummitLoungeSession();

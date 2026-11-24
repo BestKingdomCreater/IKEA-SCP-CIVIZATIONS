@@ -1,5 +1,5 @@
 import React from 'react';
-import { Map, Music, Volume2, VolumeX, X } from 'lucide-react';
+import { Crown, Map, Music, Volume2, VolumeX, X } from 'lucide-react';
 import { WorldPreset } from '../game/types';
 
 interface SettingsModalProps {
@@ -7,11 +7,13 @@ interface SettingsModalProps {
   worldPreset: WorldPreset;
   soundEnabled: boolean;
   musicEnabled: boolean;
+  allowWildStaffKingdoms: boolean;
   isMobile: boolean;
   onChangeMaxPop: (val: number) => void;
   onChangeWorldPreset: (preset: WorldPreset) => void;
   onToggleSound: () => void;
   onToggleMusic: () => void;
+  onToggleWildStaffKingdoms: () => void;
   onResetWorld: (preset?: WorldPreset) => void;
   onClose: () => void;
 }
@@ -28,11 +30,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   worldPreset,
   soundEnabled,
   musicEnabled,
+  allowWildStaffKingdoms,
   isMobile,
   onChangeMaxPop,
   onChangeWorldPreset,
   onToggleSound,
   onToggleMusic,
+  onToggleWildStaffKingdoms,
   onResetWorld,
   onClose,
 }) => {
@@ -133,6 +137,25 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               >
                 {soundEnabled ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
                 <span>{soundEnabled ? 'Enabled' : 'Muted'}</span>
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between gap-2 pt-1">
+              <div>
+                <div className="font-medium text-slate-200">Wild Staff Kingdoms</div>
+                <div className="text-[11px] text-slate-400">Allow Staff groups to found realms automatically</div>
+              </div>
+              <button
+                type="button"
+                onClick={onToggleWildStaffKingdoms}
+                className={`min-h-[38px] px-3 py-1.5 rounded-lg border font-semibold flex items-center gap-1.5 shrink-0 ${
+                  allowWildStaffKingdoms
+                    ? 'bg-amber-950/70 border-amber-500 text-amber-200'
+                    : 'bg-slate-800 border-slate-700 text-slate-400'
+                }`}
+              >
+                <Crown className="w-3.5 h-3.5" />
+                <span>{allowWildStaffKingdoms ? 'Allowed' : 'Manual'}</span>
               </button>
             </div>
           </div>

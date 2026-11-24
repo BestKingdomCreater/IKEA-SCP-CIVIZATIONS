@@ -1,6 +1,17 @@
 import React from 'react';
-import { Award, Crosshair, Home, X } from 'lucide-react';
-import { Nation, SurvivorRole, Unit, UnitKind } from '../game/types';
+import { Award, Crosshair, Crown, HeartHandshake, Home, ShieldAlert, Sparkles, X, Zap } from 'lucide-react';
+import { WEAPON_LABELS } from '../game/constants';
+import { isStaffKind, Nation, SurvivorRole, Unit, UnitKind } from '../game/types';
+
+export type UnitGiftAction =
+  | 'bless'
+  | 'rifle'
+  | 'plasma'
+  | 'pacify'
+  | 'promote_warden'
+  | 'promote_manager'
+  | 'charter_human'
+  | 'charter_staff';
 
 interface InspectUnitModalProps {
   unit: Unit;
@@ -9,6 +20,7 @@ interface InspectUnitModalProps {
   onToggleFollow: () => void;
   onClose: () => void;
   onOpenNation: (nationId: number) => void;
+  onUnitAction?: (unitId: number, action: UnitGiftAction) => void;
 }
 
 const ROLE_NAMES: Record<SurvivorRole, string> = {
@@ -30,17 +42,35 @@ export const InspectUnitModal: React.FC<InspectUnitModalProps> = ({
   onToggleFollow,
   onClose,
   onOpenNation,
+  onUnitAction,
 }) => {
-  const isStaff = unit.kind >= UnitKind.STAFF_NORMAL && unit.kind <= UnitKind.STAFF_MANAGER;
+  const isStaff = isStaffKind(unit.kind);
   const kindLabel =
-    unit.kind === UnitKind.CART_RUNNER
-      ? 'Supply Cart Runner'
-      : unit.kind === UnitKind.SABOTEUR
-        ? 'Dusk Saboteur'
-        : isStaff
-          ? 'SCP-3008-2 Entity'
-          : ROLE_NAMES[unit.role];
+    unit.isCaravan
+      ? 'Wandering Trade Caravan'
+      : unit.isMercenary
+        ? 'Free-Aisle Mercenary'
+        : unit.kind === UnitKind.CART_RUNNER
+          ? 'Supply Cart Runner'
+          : unit.kind === UnitKind.SABOTEUR
+            ? 'Dusk Saboteur'
+            : unit.kind === UnitKind.STAFF_WARDEN
+              ? 'SCP-3008-2 Siege Warden · Smashes Barricades'
+              : unit.kind === UnitKind.STAFF_STALKER
+                ? 'SCP-3008-2 Blackout Stalker · Cuts Spotlights'
+                : unit.kind === UnitKind.STAFF_ANNOUNCER
+                  ? 'SCP-3008-2 PA Hound · Closing Siren Buff'
+                  : unit.kind === UnitKind.STAFF_MANAGER
+                    ? 'SCP-3008-2 Manager Brute'
+                    : unit.kind === UnitKind.STAFF_CRAWLER
+                      ? 'SCP-3008-2 Fast Crawler'
+                      : isStaff
+                        ? nation
+                          ? 'SCP-3008-2 Citizen'
+                          : 'SCP-3008-2 Entity'
+                        : ROLE_NAMES[unit.role];
   const isInsideBuilding = (unit.insideTimer ?? 0) > 0;
+  const weaponLabel = unit.weapon ? (WEAPON_LABELS[unit.weapon] ?? unit.weapon) : WEAPON_LABELS.none;
 
   return (
     <div className="pointer-events-auto fixed inset-x-4 bottom-20 sm:inset-x-auto sm:left-4 sm:bottom-20 z-40 w-auto sm:w-[300px] max-h-[85vh] overflow-y-auto bg-[#11161f]/96 backdrop-blur-md border border-slate-700 rounded-xl shadow-2xl p-4 text-xs text-slate-200">
@@ -101,6 +131,22 @@ export const InspectUnitModal: React.FC<InspectUnitModalProps> = ({
             {unit.atk} · {unit.speed.toFixed(1)}
           </span>
         </div>
+        <div className="flex justify-between gap-2">
+          <span className="text-slate-400">Weapon</span>
+          <span className="text-right text-cyan-300 truncate">{weaponLabel}</span>
+        </div>
+        {unit.heroRelic && (
+          <div className="flex justify-between gap-2">
+            <span className="text-slate-400">Relic</span>
+            <span className="text-right text-amber-300 truncate">{unit.heroRelic}</span>
+          </div>
+        )}
+        {isStaff && unit.pacified && (
+          <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-emerald-950/60 border border-emerald-700/60 text-emerald-300 font-sans text-[11px]">
+            <HeartHandshake className="w-3.5 h-3.5 shrink-0" />
+            <span>Tamed · Friendly to humans</span>
+          </div>
+        )}
         {!isStaff && (
           <>
             <div className="flex justify-between">
@@ -148,6 +194,100 @@ export const InspectUnitModal: React.FC<InspectUnitModalProps> = ({
             >
               {nation.name}
             </button>
+          </div>
+        )}
+
+        {onUnitAction && unit.alive && (
+          <div className="pt-2.5 border-t border-slate-800 space-y-1.5 font-sans">
+            <div className="text-[11px] font-semibold text-slate-300 flex items-center gap-1.5">
+              <Sparkles className="w-3.5 h-3.5 text-[#ffda1a]" />
+              <span>{isStaff ? 'Species & God Grants' : 'God Powers & Gear'}</span>
+            </div>
+            <div className="grid grid-cols-2 gap-1.5">
+              {isStaff && !nation && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => onUnitAction(unit.id, 'charter_staff')}
+                    className="col-span-2 px-2 py-1.5 rounded-lg bg-amber-950/70 hover:bg-amber-900/80 border border-amber-500/70 text-amber-200 text-[11px] font-semibold flex items-center justify-center gap-1"
+                  >
+                    <Crown className="w-3.5 h-3.5 text-amber-300" />
+                    <span>Found Staff Kingdom</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onUnitAction(unit.id, 'pacify')}
+                    className="px-2 py-1 rounded-lg bg-emerald-950/60 hover:bg-emerald-900/70 border border-emerald-700/70 text-emerald-200 text-[10px] font-semibold flex items-center justify-center gap-1"
+                  >
+                    <HeartHandshake className="w-3 h-3" />
+                    <span>{unit.pacified ? 'Make Feral' : 'Tame Staff'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onUnitAction(unit.id, 'promote_warden')}
+                    className="px-2 py-1 rounded-lg bg-orange-950/60 hover:bg-orange-900/70 border border-orange-700/70 text-orange-200 text-[10px] font-semibold flex items-center justify-center gap-1"
+                  >
+                    <ShieldAlert className="w-3 h-3" />
+                    <span>Evolve Warden</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onUnitAction(unit.id, 'promote_manager')}
+                    className="px-2 py-1 rounded-lg bg-rose-950/60 hover:bg-rose-900/70 border border-rose-700/70 text-rose-200 text-[10px] font-semibold"
+                  >
+                    Evolve Manager
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onUnitAction(unit.id, 'rifle')}
+                    className="px-2 py-1 rounded-lg bg-cyan-950/60 hover:bg-cyan-900/70 border border-cyan-700/70 text-cyan-200 text-[10px] font-semibold"
+                  >
+                    Give Halogen Rifle
+                  </button>
+                </>
+              )}
+
+              {!isStaff && !nation && unit.kind === UnitKind.SURVIVOR && (
+                <button
+                  type="button"
+                  onClick={() => onUnitAction(unit.id, 'charter_human')}
+                  className="col-span-2 px-2 py-1.5 rounded-lg bg-sky-950/70 hover:bg-sky-900/80 border border-sky-500/70 text-sky-200 text-[11px] font-semibold flex items-center justify-center gap-1"
+                >
+                  <Crown className="w-3.5 h-3.5 text-[#ffda1a]" />
+                  <span>Charter Kingdom Here</span>
+                </button>
+              )}
+
+              {(nation || !isStaff) && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => onUnitAction(unit.id, 'rifle')}
+                    className="px-2 py-1 rounded-lg bg-cyan-950/60 hover:bg-cyan-900/70 border border-cyan-700/70 text-cyan-200 text-[10px] font-semibold flex items-center justify-center gap-1"
+                  >
+                    <Crosshair className="w-3 h-3" />
+                    <span>Halogen Rifle</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onUnitAction(unit.id, 'plasma')}
+                    className="px-2 py-1 rounded-lg bg-purple-950/60 hover:bg-purple-900/70 border border-purple-700/70 text-purple-200 text-[10px] font-semibold flex items-center justify-center gap-1"
+                  >
+                    <Zap className="w-3 h-3" />
+                    <span>Plasma Stapler</span>
+                  </button>
+                </>
+              )}
+
+              <button
+                type="button"
+                onClick={() => onUnitAction(unit.id, 'bless')}
+                className="col-span-2 px-2 py-1 rounded-lg bg-[#0058a3]/80 hover:bg-sky-700 border border-[#ffda1a]/60 text-white text-[10px] font-semibold flex items-center justify-center gap-1"
+              >
+                <Sparkles className="w-3 h-3 text-[#ffda1a]" />
+                <span>Divine Blessing (+HP &amp; ATK)</span>
+              </button>
+            </div>
           </div>
         )}
       </div>

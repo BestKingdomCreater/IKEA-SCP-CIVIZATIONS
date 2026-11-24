@@ -53,6 +53,18 @@ const BUILDING_INFO: Partial<Record<PropType, { name: string; role: string }>> =
     name: 'Barricade Gate',
     role: 'Allows friendly & allied units through while blocking enemies.',
   },
+  [PropType.TECH_LAB]: {
+    name: 'SCP-IKEA Tech Lab',
+    role: 'Tinkers research new technology, craft firearms & civilian goods, and fire Arc Capacitors once unlocked.',
+  },
+  [PropType.ESCALATOR]: {
+    name: 'Maintenance Escalator',
+    role: 'Sub-floor fast-travel tunnel connecting owned & allied Escalators across the store.',
+  },
+  [PropType.MEATBALL_VAT]: {
+    name: 'Food Court Meatball Vat',
+    role: 'Simmering Swedish meatball cauldron where scavengers and chefs harvest fresh rations.',
+  },
 };
 
 const ROLE_LABELS: Record<SurvivorRole, string> = {
@@ -126,6 +138,29 @@ export const InspectBuildingModal: React.FC<InspectBuildingModalProps> = ({
           <div className="flex items-center gap-1.5 text-[11px] text-rose-300 bg-rose-950/50 border border-rose-800/70 rounded-lg px-2.5 py-1.5 font-sans">
             <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
             <span>Light disabled by blackout or sabotage</span>
+          </div>
+        )}
+
+        {(building.kitchenOutput || building.chefsActive !== undefined) && (
+          <div className="p-2 rounded-lg bg-amber-950/40 border border-amber-700/50 space-y-1 font-sans text-[11px]">
+            <div className="flex justify-between">
+              <span className="text-amber-300 font-semibold">Kitchen Status</span>
+              <span className="font-mono-tabular text-amber-200">
+                {building.chefsActive ?? 0} Chef{(building.chefsActive ?? 0) === 1 ? '' : 's'} nearby
+              </span>
+            </div>
+            {building.kitchenOutput && (
+              <div className="text-slate-300">{building.kitchenOutput}</div>
+            )}
+          </div>
+        )}
+
+        {building.prop === PropType.ESCALATOR && building.linkedEscalators !== undefined && (
+          <div className="p-2 rounded-lg bg-teal-950/40 border border-teal-700/50 flex justify-between font-sans text-[11px]">
+            <span className="text-teal-300 font-semibold">Tunnel Network</span>
+            <span className="font-mono-tabular text-teal-200">
+              {building.linkedEscalators} linked exit{building.linkedEscalators === 1 ? '' : 's'}
+            </span>
           </div>
         )}
 

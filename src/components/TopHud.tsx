@@ -2,11 +2,13 @@ import React from 'react';
 import {
   Crown,
   Flag,
+  FlaskConical,
   KeyRound,
   Moon,
   Music,
   Pause,
   Play,
+  Radio,
   RotateCcw,
   Save,
   Settings,
@@ -30,6 +32,7 @@ interface TopHudProps {
   onOpenSaveLoad: () => void;
   onOpenRecords: () => void;
   onOpenCustomKingdom: () => void;
+  onOpenTechCenter: () => void;
   onToggleSummitLounge: () => void;
   onResetWorld: () => void;
 }
@@ -50,6 +53,7 @@ export const TopHud: React.FC<TopHudProps> = ({
   onOpenSaveLoad,
   onOpenRecords,
   onOpenCustomKingdom,
+  onOpenTechCenter,
   onToggleSummitLounge,
   onResetWorld,
 }) => {
@@ -128,6 +132,24 @@ export const TopHud: React.FC<TopHudProps> = ({
           <span className="text-slate-600">·</span>
           <span className="text-amber-300">{hud.staffCount} Staff</span>
         </div>
+
+        {hud.activeAnomaly && (
+          <div
+            className="hidden sm:flex items-center gap-1.5 px-2 py-0.5 rounded-md border text-[11px] font-semibold"
+            style={{
+              backgroundColor: 'rgba(15, 23, 42, 0.9)',
+              borderColor: hud.activeAnomaly.color,
+              color: hud.activeAnomaly.color,
+            }}
+            title={hud.activeAnomaly.description}
+          >
+            <Radio className="w-3 h-3 shrink-0" />
+            <span className="truncate max-w-[130px]">{hud.activeAnomaly.label}</span>
+            <span className="font-mono-tabular text-[10px] text-slate-300">
+              {Math.ceil(hud.activeAnomaly.remainingSec)}s
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Right: Summit Lounge, BYOK Gemini Key, Audio, Settings, Reset */}
@@ -156,6 +178,16 @@ export const TopHud: React.FC<TopHudProps> = ({
           <span className="hidden sm:inline">
             {summitSessionActive ? 'Summit Live' : 'Summit Lounge'}
           </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={onOpenTechCenter}
+          className="px-2.5 py-1.5 rounded-md bg-slate-800 hover:bg-cyan-950/70 border border-slate-700 hover:border-cyan-500/60 text-slate-100 font-medium flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+          title="Open SCP-IKEA Technology & Research Center"
+        >
+          <FlaskConical className="w-3.5 h-3.5 text-cyan-300 shrink-0" />
+          <span className="hidden lg:inline">Tech Lab</span>
         </button>
 
         <button

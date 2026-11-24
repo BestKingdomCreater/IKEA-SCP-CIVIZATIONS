@@ -14,9 +14,9 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import { TECH_TIER_NAMES } from '../game/constants';
-import { RESEARCH_BY_ID } from '../game/research';
-import { DiplomaticStance, Nation } from '../game/types';
+import { TECH_TIER_NAMES, WEAPON_LABELS } from '../game/constants';
+import { RESEARCH_BY_ID, RESEARCH_TREE } from '../game/research';
+import { BuildingSpacing, DiplomaticStance, Nation } from '../game/types';
 
 interface NationPanelProps {
   nation: Nation;
@@ -27,6 +27,7 @@ interface NationPanelProps {
   onSelectNation: (nationId: number) => void;
   onOpenResearchTree: () => void;
   onRenameNation: (nationId: number, newName: string) => void;
+  onChangeBuildingSpacing: (nationId: number, spacing: BuildingSpacing) => void;
   onSpawnUnitsForNation: (nationId: number, unitType: 'citizen' | 'guard') => void;
   onSetDiplomacy: (aId: number, bId: number, stance: DiplomaticStance) => void;
   onUniteNations: (aId: number, bId: number) => void;
@@ -41,6 +42,7 @@ export const NationPanel: React.FC<NationPanelProps> = ({
   onSelectNation,
   onOpenResearchTree,
   onRenameNation,
+  onChangeBuildingSpacing,
   onSpawnUnitsForNation,
   onSetDiplomacy,
   onUniteNations,
@@ -145,6 +147,9 @@ export const NationPanel: React.FC<NationPanelProps> = ({
             </div>
           )}
           <p className="text-[11px] text-slate-400 mt-0.5">
+            {nation.species === 'staff' && (
+              <span className="text-yellow-300 font-semibold mr-1.5">Staff Kingdom ·</span>
+            )}
             {nation.isUnion && (
               <span className="text-amber-300 font-semibold mr-1.5">Grand Union ·</span>
             )}
@@ -365,6 +370,20 @@ export const NationPanel: React.FC<NationPanelProps> = ({
             <div className="text-[10px] text-slate-400">Founded</div>
             <div className="text-sm font-semibold text-slate-300">Day {nation.foundedDay}</div>
           </div>
+          <div>
+            <div className="text-[10px] text-slate-400">Firearms</div>
+            <div className="text-sm font-semibold text-cyan-300">{Math.round(nation.firearms ?? 0)}</div>
+          </div>
+          <div>
+            <div className="text-[10px] text-slate-400">Civilian Goods</div>
+            <div className="text-sm font-semibold text-amber-200">{Math.round(nation.civilianGoods ?? 0)}</div>
+          </div>
+          <div>
+            <div className="text-[10px] text-slate-400">Standard Arm</div>
+            <div className="text-[11px] font-semibold text-rose-300 truncate">
+              {WEAPON_LABELS[nation.bestWeapon ?? 'none'] ?? 'Unarmed'}
+            </div>
+          </div>
         </div>
 
         {/* Population Reproduction & Capacity Status */}
@@ -451,6 +470,30 @@ export const NationPanel: React.FC<NationPanelProps> = ({
               <span className="text-amber-300 font-medium">{nation.buildingPattern}</span>
             )}
           </div>
+          {nation.alive && (
+            <div className="flex items-center justify-between gap-2 mb-2 font-sans">
+              <span className="text-slate-400 text-[10px]">City Spacing</span>
+              <div className="flex items-center gap-1">
+                {(['Crowded', 'Balanced', 'Spaced'] as BuildingSpacing[]).map((sp) => {
+                  const active = (nation.buildingSpacing ?? 'Balanced') === sp;
+                  return (
+                    <button
+                      key={sp}
+                      type="button"
+                      onClick={() => onChangeBuildingSpacing(nation.id, sp)}
+                      className={`px-2 py-0.5 rounded text-[10px] font-medium border transition-colors ${
+                        active
+                          ? 'bg-[#0058a3] border-[#ffda1a]/80 text-white'
+                          : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      {sp}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-slate-200">
             <div className="flex justify-between">
               <span className="text-amber-200">Meatball Bistros</span>
@@ -465,6 +508,10 @@ export const NationPanel: React.FC<NationPanelProps> = ({
               <span>{nation.buildings.archives}</span>
             </div>
             <div className="flex justify-between">
+              <span className="text-cyan-300">Tech Labs</span>
+              <span>{nation.buildings.techLabs ?? 0}</span>
+            </div>
+            <div className="flex justify-between">
               <span className="text-sky-300">Cart Depots</span>
               <span>{nation.buildings.depots}</span>
             </div>
@@ -472,8 +519,8 @@ export const NationPanel: React.FC<NationPanelProps> = ({
               <span className="text-slate-400">Mattress Huts</span>
               <span>{nation.buildings.huts}</span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-yellow-300">Towers / Lights</span>
+            <div className="flex justify-between col-span-2">
+              <span className="text-yellow-300">Watchtowers / Spotlights</span>
               <span>
                 {nation.buildings.watchtowers}/{nation.buildings.spotlights}
               </span>
@@ -488,9 +535,9 @@ export const NationPanel: React.FC<NationPanelProps> = ({
           <div className="min-w-0">
             <div className="flex items-center gap-1.5 text-slate-300 font-medium">
               <BookOpen className="w-3.5 h-3.5 text-sky-400 shrink-0" />
-              <span>Research Lab</span>
+              <span>Technology &amp; Research</span>
               <span className="text-[11px] font-mono-tabular text-slate-400">
-                ({nation.researchedTechs?.length ?? 0}/9)
+                ({nation.researchedTechs?.length ?? 0}/{RESEARCH_TREE.length})
               </span>
             </div>
             <div className="text-[11px] text-slate-400 mt-0.5 truncate font-mono-tabular">
@@ -503,8 +550,8 @@ export const NationPanel: React.FC<NationPanelProps> = ({
                   {RESEARCH_BY_ID[nation.activeResearchId].cost} (+
                   {(nation.researchRate ?? 0).toFixed(1)}/s)
                 </>
-              ) : (nation.researchedTechs?.length ?? 0) >= 9 ? (
-                <span className="text-emerald-400 font-sans">All 9 techs unlocked</span>
+              ) : (nation.researchedTechs?.length ?? 0) >= RESEARCH_TREE.length ? (
+                <span className="text-emerald-400 font-sans">All {RESEARCH_TREE.length} techs unlocked</span>
               ) : (
                 <span>+{(nation.researchRate ?? 0).toFixed(1)} RP/s · Idle</span>
               )}

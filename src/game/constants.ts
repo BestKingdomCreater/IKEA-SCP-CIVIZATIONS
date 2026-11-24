@@ -144,3 +144,24 @@ export const IKEA_QUOTES = [
   'Blessed be the Lingonberry Vat and its infinite refill.',
   'Pay your Allen Wrench tribute before the store closes.',
 ];
+
+export const STAFF_KINGDOM_NAMES = [
+  'Closing Bell Dominion',
+  'Yellow-Shirt Syndicate',
+  'Night Shift Empire',
+  'Aisle Manager Collective',
+  'Fluorescent Conclave',
+  'Lost Showroom Covenant',
+  'Warehouse Wardens',
+  'Midnight Inventory Pact',
+];
+
+export const WEAPON_LABELS: Record<string, string> = {
+  none: 'Unarmed / Tool',
+  allen_spear: 'Allen-Key Halberd',
+  nailgun: 'Pneumatic Nailgun',
+  halogen_rifle: 'Halogen Beam Rifle',
+  plasma_stapler: 'Plasma Stapler',
+  pa_megaphone: 'Sonic PA Blaster',
+};
+

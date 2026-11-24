@@ -24,6 +24,30 @@ export const enum PropType {
   WORKSHOP = 14,
   ARCHIVE = 15,
   CART_DEPOT = 16,
+  TECH_LAB = 17,
+  ESCALATOR = 18,
+}
+
+export type WeaponType =
+  | 'none'
+  | 'allen_spear'
+  | 'nailgun'
+  | 'halogen_rifle'
+  | 'plasma_stapler'
+  | 'pa_megaphone';
+
+export type StoreAnomalyType =
+  | 'FLUORESCENT_SURGE'
+  | 'AISLE_FOG'
+  | 'CLEARANCE_STAMPEDE'
+  | 'ESPRESSO_RUSH';
+
+export interface ActiveAnomaly {
+  type: StoreAnomalyType;
+  label: string;
+  description: string;
+  remainingSec: number;
+  color: string;
 }
 
 export const enum UnitKind {
@@ -33,6 +57,20 @@ export const enum UnitKind {
   STAFF_CRAWLER = 3,
   STAFF_MANAGER = 4,
   SABOTEUR = 5,
+  STAFF_WARDEN = 6,
+  STAFF_STALKER = 7,
+  STAFF_ANNOUNCER = 8,
+}
+
+export function isStaffKind(kind: UnitKind): boolean {
+  return (
+    kind === UnitKind.STAFF_NORMAL ||
+    kind === UnitKind.STAFF_CRAWLER ||
+    kind === UnitKind.STAFF_MANAGER ||
+    kind === UnitKind.STAFF_WARDEN ||
+    kind === UnitKind.STAFF_STALKER ||
+    kind === UnitKind.STAFF_ANNOUNCER
+  );
 }
 
 export const enum SurvivorRole {
@@ -73,18 +111,27 @@ export type BuildingPattern =
   | 'Cathedral Spire'
   | 'Imperial Concourse';
 
-export type ResearchBranch = 'economy' | 'military' | 'lighting';
+export type BuildingSpacing = 'Crowded' | 'Balanced' | 'Spaced';
+
+export type ResearchBranch = 'economy' | 'military' | 'lighting' | 'scp_tech';
 
 export type TechId =
   | 'flatpack_joinery'
   | 'lingonberry_kitchens'
   | 'automated_cart_rails'
+  | 'civilian_catalog'
   | 'allen_spears'
   | 'watchtower_turrets'
   | 'siege_cart_rams'
+  | 'pneumatic_nailguns'
   | 'halogen_floodlights'
   | 'fluorescent_ward'
-  | 'blueprint_mastery';
+  | 'blueprint_mastery'
+  | 'maintenance_escalators'
+  | 'swedish_schematics'
+  | 'flatpack_automation'
+  | 'fluorescent_capacitor'
+  | 'halogen_rifles';
 
 export type UnitTrait = 'Brave' | 'Speedy' | 'Hoarder' | 'Tough' | 'Pyromaniac' | 'Blessed';
 
@@ -180,10 +227,12 @@ export interface Nation {
     depots: number;
     watchtowers: number;
     spotlights: number;
+    techLabs?: number;
   };
   battlePlan?: BattlePlan;
   buildingPattern?: BuildingPattern;
   customBuildingPattern?: BuildingPattern;
+  buildingSpacing?: BuildingSpacing;
   researchedTechs?: TechId[];
   activeResearchId?: TechId | null;
   researchPoints?: number;
@@ -201,6 +250,11 @@ export interface Nation {
   reproductionRate?: number;
   lastAttackerNationId?: number;
   lastAttackedDay?: number;
+  species?: 'human' | 'staff';
+  firearms?: number;
+  civilianGoods?: number;
+  weaponTier?: 0 | 1 | 2 | 3;
+  bestWeapon?: WeaponType;
 }
 
 export interface Unit {
@@ -247,7 +301,15 @@ export interface Unit {
   insideBuildingIdx?: number;
   visitCooldown?: number;
   visitTargetIdx?: number;
+  routeWaypoints?: Array<{ x: number; y: number }>;
+  proximityVoted?: boolean;
   veteranTitle?: string;
+  weapon?: WeaponType;
+  heroRelic?: string;
+  pacified?: boolean;
+  isCaravan?: boolean;
+  isMercenary?: boolean;
+  teleportCooldown?: number;
   alive: boolean;
 }
 
@@ -259,6 +321,7 @@ export interface Projectile {
   damage: number;
   nationId: number;
   life: number;
+  color?: string;
 }
 
 export interface Particle {
@@ -309,13 +372,19 @@ export type ToolId =
   | 'inspect'
   | 'spawn_survivor'
   | 'spawn_staff'
+  | 'spawn_warden'
+  | 'spawn_stalker'
+  | 'spawn_announcer'
   | 'spawn_manager'
   | 'spawn_trader'
+  | 'spawn_caravan'
+  | 'spawn_mercenary'
   | 'spawn_kingdom'
   | 'paint_food'
   | 'paint_warehouse'
   | 'paint_showroom'
   | 'paint_dark'
+  | 'paint_road'
   | 'paint_eraser'
   | 'power_meatball'
   | 'power_fever'
@@ -334,10 +403,18 @@ export type ToolId =
   | 'power_rally_guard'
   | 'power_restock'
   | 'power_plague'
+  | 'power_anomaly'
+  | 'power_supply_drop'
+  | 'power_pacify_staff'
+  | 'power_prosperity'
+  | 'power_vortex'
+  | 'power_enlighten'
   | 'build_spotlight'
   | 'build_watchtower'
   | 'build_wall'
-  | 'build_bistro';
+  | 'build_bistro'
+  | 'build_tech_lab'
+  | 'build_escalator';
 
 export type BrushSize = 'S' | 'M' | 'L';
 export type SimSpeed = 0 | 1 | 2 | 5 | 10;
@@ -385,6 +462,7 @@ export interface CustomKingdomConfig {
   government: GovernmentType;
   ideology: Ideology;
   buildingPattern: BuildingPattern;
+  buildingSpacing?: BuildingSpacing;
   startingPop: number;
 }
 
@@ -406,6 +484,8 @@ export interface HudSnapshot {
   speed: SimSpeed;
   summitActive: boolean;
   auditNight?: boolean;
+  activeAnomaly?: ActiveAnomaly | null;
+  allowWildStaffKingdoms?: boolean;
 }
 
 export interface InspectedBuilding {
@@ -418,6 +498,9 @@ export interface InspectedBuilding {
   ownerId: number;
   occupants: Array<{ id: number; name: string; role: SurvivorRole }>;
   disabled?: boolean;
+  chefsActive?: number;
+  linkedEscalators?: number;
+  kitchenOutput?: string;
 }
 
 export interface InspectTarget {
