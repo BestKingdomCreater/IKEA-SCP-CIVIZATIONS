@@ -82,10 +82,21 @@ export interface SummitLoungeTurnRequest {
   isNight: boolean;
   activeAnomaly?: ActiveAnomaly | null;
   staffInvasionAlert?: StaffInvasionAlert | null;
+  staffAlertTier?: 0 | 1 | 2;
+  staffPackMembers?: number;
   nations: Array<{
     id: number;
     name: string;
     species?: 'human' | 'staff';
+    buildingPattern?: string;
+    cultureName?: string;
+    originSpecies?: 'human' | 'staff' | 'hybrid';
+    cultureTraits?: string[];
+    mixingScore?: number;
+    mixedWith?: string[];
+    borderPolicy?: string;
+    borderVigilance?: number;
+    greenCardsIssued?: number;
     gov: string;
     ideology: string;
     techTier: number;
@@ -152,6 +163,12 @@ export function buildCompactSummitSnapshot(
         id: n.id,
         name: n.name,
         species: n.species || 'human',
+        buildingPattern: n.buildingPattern,
+        cultureName: n.culture?.name,
+        originSpecies: n.culture?.originSpecies || n.species || 'human',
+        cultureTraits: n.culture?.traits || [],
+        borderPolicy: n.culture?.borderPolicy || 'Open Aisles',
+        greenCardsIssued: n.culture?.greenCardsIssued ?? 0,
         gov: n.government,
         ideology: n.ideology,
         techTier: n.techTier,
@@ -162,6 +179,7 @@ export function buildCompactSummitSnapshot(
         firearms: Math.round(n.firearms || 0),
         civilianGoods: Math.round(n.civilianGoods || 0),
         bestWeapon: n.bestWeapon || 'allen_spear',
+        researchedTechCount: n.researchedTechs?.length ?? 0,
         hasInvasionRadar: hasTech(n, 'staff_invasion_radar'),
         isUnion: Boolean(n.isUnion),
         unionMembers: n.unionMembers || [],
@@ -212,9 +230,64 @@ function runHeuristicSummitLoungeTurn(
 
   if (payload.topic?.trim()) {
     const t = payload.topic.trim();
+    const tLow = t.toLowerCase();
+    if (tLow.includes('green card') || tLow.includes('border') || tLow.includes('visa')) {
+      const canAccord = stance !== 'WAR' && Math.random() < 0.55;
+      return {
+        speakerNationId: speaker.id,
+        dialogue: `${other.leaderName}, our ${speaker.borderPolicy || 'Open Aisles'} border policy has issued ${speaker.greenCardsIssued || 0} Green Cards. Let us set up reciprocal Green Card lanes between ${speaker.name} and ${other.name}!`,
+        mood: speaker.borderPolicy === 'Lockdown' ? 'tense' : 'cordial',
+        usedGemini: false,
+        diplomaticAction: canAccord
+          ? {
+              type: 'CULTURAL_EXCHANGE',
+              actorNationId: speaker.id,
+              targetNationId: other.id,
+              quote: `Mutual Green Card & cultural crossing accord signed with ${other.name}!`,
+            }
+          : undefined,
+      };
+    }
+    if (tLow.includes('cultur') || tLow.includes('mix') || tLow.includes('syncretic')) {
+      return {
+        speakerNationId: speaker.id,
+        dialogue: `${speaker.name}'s ${speaker.cultureName || 'Aisle Culture'} (${speaker.mixingScore || 0}% blend) welcomes visitors from ${other.name}. Shared bistros and trade carts are weaving our traditions together!`,
+        mood: 'jovial',
+        usedGemini: false,
+        diplomaticAction:
+          stance !== 'WAR' && Math.random() < 0.65
+            ? {
+                type: 'CULTURAL_EXCHANGE',
+                actorNationId: speaker.id,
+                targetNationId: other.id,
+                quote: `${speaker.name} & ${other.name} opened a Cultural Exchange Pavilion!`,
+              }
+            : undefined,
+      };
+    }
+    if (tLow.includes('staff') || tLow.includes('dominan') || tLow.includes('pack') || tLow.includes('goliath')) {
+      return {
+        speakerNationId: speaker.id,
+        dialogue:
+          (payload.staffAlertTier ?? 0) >= 1
+            ? `Wild Staff noticed human dominance across the store (Tier ${payload.staffAlertTier})—Shift Technicians, Inventory Spotters, Spill-Sweepers, and Warehouse Goliaths are grouping into night attack packs! Keep our watchtowers manned, ${other.leaderName}.`
+            : `Whether facing wild Warehouse Goliaths or sovereign Staff Directorates, ${speaker.name} keeps ${speaker.firearms || 0} weapons ready on the perimeter.`,
+        mood: (payload.staffAlertTier ?? 0) >= 1 ? 'urgent' : 'tense',
+        usedGemini: false,
+      };
+    }
+    if (tLow.includes('tech') || tLow.includes('research') || tLow.includes('tier')) {
+      const highTechLabel = speaker.bestWeapon ? WEAPON_LABELS[speaker.bestWeapon] : 'Allen Wrench Spears';
+      return {
+        speakerNationId: speaker.id,
+        dialogue: `${speaker.name} has completed ${speaker.researchedTechCount || 0}/32 techs—fielding ${highTechLabel} and automated aisle engineering. Let our Tech Labs share schematics, ${other.leaderName}.`,
+        mood: 'cordial',
+        usedGemini: false,
+      };
+    }
     return {
       speakerNationId: speaker.id,
-      dialogue: `Regarding "${t}" — ${speaker.name} currently holds ${speaker.meatballs} meatballs and ${speaker.wrenches} Allen wrenches. ${other.leaderName}, if you honor our border aisles, we can work together.`,
+      dialogue: `Regarding "${t}" — ${speaker.name} (${speaker.cultureName || 'Store Realm'}, ${speaker.borderPolicy || 'Open Aisles'}) holds ${speaker.meatballs} meatballs and ${speaker.wrenches} wrenches. ${other.leaderName}, honor our checkpoints and we can strike a deal.`,
       mood: stance === 'WAR' ? 'tense' : 'cordial',
       usedGemini: false,
     };
@@ -245,6 +318,20 @@ function runHeuristicSummitLoungeTurn(
   }
 
   if (stance === 'NEUTRAL' || stance === 'TRUCE') {
+    if (payload.history.length >= 2 && Math.random() < 0.24) {
+      return {
+        speakerNationId: speaker.id,
+        dialogue: `${other.leaderName}, our citizens are already blending customs (${speaker.cultureName || 'Aisle Culture'}). Let us issue mutual Green Cards and formalize a Cultural Exchange!`,
+        mood: 'jovial',
+        usedGemini: false,
+        diplomaticAction: {
+          type: 'CULTURAL_EXCHANGE',
+          actorNationId: speaker.id,
+          targetNationId: other.id,
+          quote: `Cultural Exchange & Green Card accord signed with ${other.name}!`,
+        },
+      };
+    }
     if (payload.history.length >= 2 && Math.random() < 0.45) {
       return {
         speakerNationId: speaker.id,
@@ -259,6 +346,19 @@ function runHeuristicSummitLoungeTurn(
         },
       };
     }
+  } else if (stance === 'TRADE_PACT' && payload.history.length >= 2 && Math.random() < 0.25) {
+    return {
+      speakerNationId: speaker.id,
+      dialogue: `With ${speaker.greenCardsIssued || 0} Green Cards issued at our gates, ${other.leaderName}, let us broaden our Cultural Exchange so our peoples mingle without friction.`,
+      mood: 'cordial',
+      usedGemini: false,
+      diplomaticAction: {
+        type: 'CULTURAL_EXCHANGE',
+        actorNationId: speaker.id,
+        targetNationId: other.id,
+        quote: `Green Card & Cultural Exchange expanded between ${speaker.name} and ${other.name}!`,
+      },
+    };
   } else if (stance === 'ALLIANCE') {
     if (payload.history.length >= 2 && Math.random() < 0.48) {
       return {
@@ -291,6 +391,15 @@ function runHeuristicSummitLoungeTurn(
     }
   }
 
+  const dominanceLine =
+    (payload.staffAlertTier ?? 0) >= 2
+      ? `Store Dominance Alert Tier 2! Wild Staff are fielding Warehouse Goliaths, Inventory Spotters, Shift Technicians, and Spill-Sweepers in organized siege packs—check those gates!`
+      : (payload.staffAlertTier ?? 0) === 1
+        ? `Notice how wild Staff now group into coordinated packs at night? Human dominance has triggered their hive instinct—keep watchtowers armed!`
+        : null;
+  const cultureLine = speaker.cultureName
+    ? `Our ${speaker.cultureName} (${speaker.cultureTraits?.slice(0, 2).join(', ') || 'Store Craft'}) runs a ${speaker.borderPolicy || 'Open Aisles'} border (${speaker.greenCardsIssued || 0} Green Cards issued${speaker.mixedWith?.length ? `, blended with ${speaker.mixedWith[0]}` : ''}).`
+    : null;
   const alertLine = payload.staffInvasionAlert
     ? `PA Radar Alert! ${payload.staffInvasionAlert.title} (${payload.staffInvasionAlert.enemyCount} Staff near ${payload.staffInvasionAlert.nationName}) — our corridor guards and watchtowers are locking down!`
     : null;
@@ -299,7 +408,7 @@ function runHeuristicSummitLoungeTurn(
     : null;
   const staffLine =
     speaker.species === 'staff'
-      ? `As a sovereign SCP-3008-2 Staff realm, ${speaker.name} keeps the aisles tidy and our ${speaker.firearms || 0} PA weapons ready—respect our yellow-polo borders, ${other.leaderName}.`
+      ? `As a sovereign SCP-3008-2 Staff Directorate, ${speaker.name} keeps our Breakroom Pods, Security Pylons, and Badge Gates in ${speaker.cultureName || 'Yellow-Shirt Protocol'} order—show a Green Card at the gate, ${other.leaderName}.`
       : null;
   const unionCorridorLine =
     speaker.isUnion || speaker.hasUnionCorridor
@@ -312,28 +421,33 @@ function runHeuristicSummitLoungeTurn(
     speaker.bestWeapon === 'arc_caster' ||
     (speaker.firearms || 0) > 0 ||
     (speaker.civilianGoods || 0) > 0
-      ? `Our Tech Labs unlocked ${speaker.researchedTechCount || 0} techs with ${highTechLabel} (${speaker.firearms || 0} firearms, ${speaker.civilianGoods || 0} catalog goods)—Forklift Juggernauts & Barcode Scanners won't breach us easily!`
+      ? `Our Tech Labs unlocked ${speaker.researchedTechCount || 0}/32 techs with ${highTechLabel} (${speaker.firearms || 0} weapons, ${speaker.civilianGoods || 0} catalog goods)—not even Inventory Spotters or Warehouse Goliaths breach us easily!`
       : null;
   const radarLine = speaker.hasInvasionRadar
-    ? `With PA Motion Sensors online, our watchtowers spot Staff siege packs and Shelf Quartermasters long before they hit the perimeter.`
+    ? `With PA Motion Sensors online, our watchtowers spot Staff siege packs, Spill-Sweepers, and Shift Technicians long before they hit the perimeter.`
     : null;
 
   const lines = [
+    ...(dominanceLine ? [dominanceLine] : []),
     ...(alertLine ? [alertLine] : []),
+    ...(cultureLine ? [cultureLine] : []),
     ...(anomalyLine ? [anomalyLine] : []),
     ...(staffLine ? [staffLine] : []),
     ...(unionCorridorLine ? [unionCorridorLine] : []),
     ...(techLine ? [techLine] : []),
     ...(radarLine ? [radarLine] : []),
-    `The showroom lights hum loudly today, ${other.leaderName}. With ${speaker.pop} citizens in ${speaker.name}, our top priority is keeping Night Staff away from our huts.`,
+    `The showroom lights hum loudly today, ${other.leaderName}. With ${speaker.pop} citizens in ${speaker.name}, our builders keep trimming redundant walls and reinforcing outer borders.`,
     `Pass the lingonberry cup, ${other.leaderName}. Between ${speaker.name}'s ${speaker.wrenches} wrenches and your carts, nobody in Sector 4 can match us.`,
-    `Our ${speaker.gov} has ${speaker.happiness}% approval, though the ${speaker.tax} tax rate keeps our builders grumbling over Billy shelves.`,
+    `Our ${speaker.gov} has ${speaker.happiness}% approval, though the ${speaker.tax} tax rate keeps our builders busy over Billy shelves.`,
   ];
 
   return {
     speakerNationId: speaker.id,
     dialogue: lines[payload.history.length % lines.length],
-    mood: payload.staffInvasionAlert ? 'urgent' : 'cordial',
+    mood:
+      payload.staffInvasionAlert || (payload.staffAlertTier ?? 0) >= 2
+        ? 'urgent'
+        : 'cordial',
     usedGemini: false,
   };
 }
@@ -534,6 +648,7 @@ export async function runGodWhisper(
         'PEACE_TREATY',
         'TRADE_PACT',
         'EMBARGO',
+        'CULTURAL_EXCHANGE',
       ].includes(parsed.diplomaticActionType)
     ) {
       action = {

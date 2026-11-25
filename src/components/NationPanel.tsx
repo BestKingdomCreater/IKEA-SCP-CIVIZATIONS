@@ -15,9 +15,24 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import { NATION_PALETTE, TECH_TIER_NAMES, WEAPON_LABELS } from '../game/constants';
+import {
+  BORDER_POLICY_INFO,
+  CULTURE_TRAIT_INFO,
+  getBuildingDisplayMeta,
+  NATION_PALETTE,
+  TECH_TIER_NAMES,
+  WEAPON_LABELS,
+} from '../game/constants';
 import { RESEARCH_BY_ID, RESEARCH_TREE } from '../game/research';
-import { BannerEmblem, BannerStyle, BuildingSpacing, DiplomaticStance, Nation } from '../game/types';
+import {
+  BannerEmblem,
+  BannerStyle,
+  BorderPolicy,
+  BuildingSpacing,
+  DiplomaticStance,
+  Nation,
+  PropType,
+} from '../game/types';
 
 interface NationPanelProps {
   nation: Nation;
@@ -38,6 +53,7 @@ interface NationPanelProps {
     }
   ) => void;
   onChangeBuildingSpacing: (nationId: number, spacing: BuildingSpacing) => void;
+  onSetBorderPolicy: (nationId: number, policy: BorderPolicy) => void;
   onSpawnUnitsForNation: (nationId: number, unitType: 'citizen' | 'guard') => void;
   onSetDiplomacy: (aId: number, bId: number, stance: DiplomaticStance) => void;
   onUniteNations: (aId: number, bId: number) => void;
@@ -54,6 +70,7 @@ export const NationPanel: React.FC<NationPanelProps> = ({
   onRenameNation,
   onUpdateNationBanner,
   onChangeBuildingSpacing,
+  onSetBorderPolicy,
   onSpawnUnitsForNation,
   onSetDiplomacy,
   onUniteNations,
@@ -221,7 +238,7 @@ export const NationPanel: React.FC<NationPanelProps> = ({
                 className="px-2 py-1 rounded bg-emerald-950/60 hover:bg-emerald-900/70 border border-emerald-700/70 text-emerald-200 text-[10px] font-semibold flex items-center gap-1"
               >
                 <UserPlus className="w-3 h-3" />
-                <span>+3 Citizens</span>
+                <span>{nation.species === 'staff' ? '+3 Staff' : '+3 Citizens'}</span>
               </button>
               <button
                 type="button"
@@ -229,7 +246,7 @@ export const NationPanel: React.FC<NationPanelProps> = ({
                 className="px-2 py-1 rounded bg-sky-950/60 hover:bg-sky-900/70 border border-sky-700/70 text-sky-200 text-[10px] font-semibold flex items-center gap-1"
               >
                 <Shield className="w-3 h-3" />
-                <span>+2 Guards</span>
+                <span>{nation.species === 'staff' ? '+2 Wardens' : '+2 Guards'}</span>
               </button>
               <button
                 type="button"
@@ -658,11 +675,133 @@ export const NationPanel: React.FC<NationPanelProps> = ({
         </div>
       )}
 
-      {/* IKEA Resource Buildings */}
-      {nation.buildings && (
+      {/* Culture, Cultural Mixing & Border Green Card Policy */}
+      {nation.culture && (
+        <div className="py-2.5 border-b border-slate-800 space-y-2.5 text-[11px]">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <div className="text-slate-400 text-[10px] uppercase tracking-wider">Culture &amp; Heritage</div>
+              <div className="font-semibold text-pink-300 text-xs">{nation.culture.name}</div>
+            </div>
+            <span
+              className={`px-2 py-0.5 rounded text-[10px] font-semibold border ${
+                nation.culture.originSpecies === 'hybrid'
+                  ? 'bg-pink-950/60 border-pink-600/60 text-pink-200'
+                  : nation.culture.originSpecies === 'staff'
+                    ? 'bg-yellow-950/60 border-yellow-600/60 text-yellow-200'
+                    : 'bg-sky-950/60 border-sky-700/60 text-sky-200'
+              }`}
+            >
+              {nation.culture.originSpecies === 'hybrid'
+                ? 'Hybrid Syncretic'
+                : nation.culture.originSpecies === 'staff'
+                  ? 'Staff Culture'
+                  : 'Survivor Culture'}
+            </span>
+          </div>
+
+          {nation.culture.traits.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {nation.culture.traits.map((trait) => (
+                <span
+                  key={trait}
+                  title={CULTURE_TRAIT_INFO[trait]}
+                  className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-[10px] text-amber-200"
+                >
+                  {trait}
+                </span>
+              ))}
+            </div>
+          )}
+
+          {/* Cultural Composition & Mixing Progress */}
+          <div className="space-y-1">
+            <div className="flex items-center justify-between text-[10px] text-slate-400">
+              <span>Cultural Makeup</span>
+              <span className="font-mono-tabular text-pink-300">
+                Blend Progress {Math.round(nation.culture.mixingScore)}%
+              </span>
+            </div>
+            <div className="space-y-1">
+              {Object.entries(nation.culture.composition)
+                .sort((a, b) => b[1] - a[1])
+                .map(([cName, pct]) => (
+                  <div key={cName} className="flex items-center gap-2 text-[10px]">
+                    <span className="truncate flex-1 text-slate-300">{cName}</span>
+                    <div className="w-20 h-1.5 bg-slate-800 rounded overflow-hidden shrink-0">
+                      <div
+                        className="h-full bg-pink-400"
+                        style={{ width: `${Math.min(100, Math.round(pct))}%` }}
+                      />
+                    </div>
+                    <span className="font-mono-tabular text-slate-400 w-8 text-right">{pct}%</span>
+                  </div>
+                ))}
+            </div>
+          </div>
+
+          {/* Border Checking & Green Card Controls */}
+          <div className="pt-2 border-t border-slate-800/80 space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-slate-300 font-medium">Border &amp; Green Card Policy</span>
+              <span className="font-mono-tabular text-[10px] text-emerald-300">
+                Vigilance {Math.round(nation.culture.borderVigilance)}%
+              </span>
+            </div>
+            {nation.alive ? (
+              <div className="grid grid-cols-2 gap-1">
+                {(['Open Aisles', 'Green Card', 'Strict Inspection', 'Lockdown'] as BorderPolicy[]).map(
+                  (pol) => {
+                    const active = nation.culture?.borderPolicy === pol;
+                    const info = BORDER_POLICY_INFO[pol];
+                    return (
+                      <button
+                        key={pol}
+                        type="button"
+                        title={info.short}
+                        onClick={() => onSetBorderPolicy(nation.id, pol)}
+                        className={`px-2 py-1 rounded text-[10px] font-semibold border transition-colors text-left ${
+                          active
+                            ? 'bg-emerald-950/80 border-emerald-500 text-emerald-200'
+                            : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        {info.label}
+                      </button>
+                    );
+                  }
+                )}
+              </div>
+            ) : (
+              <div className="text-[10px] text-slate-400">{nation.culture.borderPolicy}</div>
+            )}
+            <div className="grid grid-cols-3 gap-1.5 pt-0.5 font-mono-tabular text-[10px]">
+              <div className="bg-slate-900/75 rounded p-1.5 border border-slate-800">
+                <div className="text-slate-400">Green Cards</div>
+                <div className="text-emerald-300 font-semibold">{nation.culture.greenCardsIssued}</div>
+              </div>
+              <div className="bg-slate-900/75 rounded p-1.5 border border-slate-800">
+                <div className="text-slate-400">Checks</div>
+                <div className="text-sky-300 font-semibold">{nation.culture.borderChecks}</div>
+              </div>
+              <div className="bg-slate-900/75 rounded p-1.5 border border-slate-800">
+                <div className="text-slate-400">Turned Back</div>
+                <div className="text-amber-300 font-semibold">{nation.culture.turnedBackCount}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Kingdom Structures */}
+      {nation.buildings && (() => {
+        const isStaff = nation.species === 'staff';
+        return (
         <div className="py-2.5 border-b border-slate-800 text-[11px] font-mono-tabular">
           <div className="flex items-center justify-between gap-2 mb-1.5 font-sans">
-            <span className="text-slate-400">IKEA Resource Buildings</span>
+            <span className="text-slate-400">
+              {isStaff ? 'Staff Directorate Structures' : 'IKEA Resource Buildings'}
+            </span>
             {nation.buildingPattern && (
               <span className="text-amber-300 font-medium">{nation.buildingPattern}</span>
             )}
@@ -692,39 +831,54 @@ export const NationPanel: React.FC<NationPanelProps> = ({
             </div>
           )}
           <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-slate-200">
-            <div className="flex justify-between">
-              <span className="text-amber-200">Meatball Bistros</span>
+            <div className="flex justify-between gap-1">
+              <span className="text-amber-200 truncate">
+                {getBuildingDisplayMeta(PropType.BISTRO, isStaff).name}
+              </span>
               <span>{nation.buildings.bistros}</span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-orange-300">Wrench Workshops</span>
+            <div className="flex justify-between gap-1">
+              <span className="text-orange-300 truncate">
+                {getBuildingDisplayMeta(PropType.WORKSHOP, isStaff).name}
+              </span>
               <span>{nation.buildings.workshops}</span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-purple-300">Billy Archives</span>
+            <div className="flex justify-between gap-1">
+              <span className="text-purple-300 truncate">
+                {getBuildingDisplayMeta(PropType.ARCHIVE, isStaff).name}
+              </span>
               <span>{nation.buildings.archives}</span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-cyan-300">Tech Labs</span>
+            <div className="flex justify-between gap-1">
+              <span className="text-cyan-300 truncate">
+                {getBuildingDisplayMeta(PropType.TECH_LAB, isStaff).name}
+              </span>
               <span>{nation.buildings.techLabs ?? 0}</span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-sky-300">Cart Depots</span>
+            <div className="flex justify-between gap-1">
+              <span className="text-sky-300 truncate">
+                {getBuildingDisplayMeta(PropType.CART_DEPOT, isStaff).name}
+              </span>
               <span>{nation.buildings.depots}</span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-slate-400">Mattress Huts</span>
+            <div className="flex justify-between gap-1">
+              <span className="text-slate-400 truncate">
+                {getBuildingDisplayMeta(PropType.MATTRESS_HUT, isStaff).name}
+              </span>
               <span>{nation.buildings.huts}</span>
             </div>
             <div className="flex justify-between col-span-2">
-              <span className="text-yellow-300">Watchtowers / Spotlights</span>
+              <span className="text-yellow-300">
+                {getBuildingDisplayMeta(PropType.WATCHTOWER, isStaff).name}s / Spotlights
+              </span>
               <span>
                 {nation.buildings.watchtowers}/{nation.buildings.spotlights}
               </span>
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* Research & Technology Tree */}
       <div className="py-2.5 border-b border-slate-800 space-y-2">

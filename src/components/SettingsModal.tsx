@@ -7,6 +7,7 @@ interface SettingsModalProps {
   worldPreset: WorldPreset;
   soundEnabled: boolean;
   musicEnabled: boolean;
+  ambientEnabled: boolean;
   allowWildStaffKingdoms: boolean;
   infiniteWorldMode: boolean;
   smartInfrastructureMode: boolean;
@@ -15,6 +16,7 @@ interface SettingsModalProps {
   onChangeWorldPreset: (preset: WorldPreset) => void;
   onToggleSound: () => void;
   onToggleMusic: () => void;
+  onToggleAmbient: () => void;
   onToggleWildStaffKingdoms: () => void;
   onToggleInfiniteWorld: () => void;
   onToggleSmartInfrastructure: () => void;
@@ -34,6 +36,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   worldPreset,
   soundEnabled,
   musicEnabled,
+  ambientEnabled,
   allowWildStaffKingdoms,
   infiniteWorldMode,
   smartInfrastructureMode,
@@ -42,6 +45,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onChangeWorldPreset,
   onToggleSound,
   onToggleMusic,
+  onToggleAmbient,
   onToggleWildStaffKingdoms,
   onToggleInfiniteWorld,
   onToggleSmartInfrastructure,
@@ -145,6 +149,25 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               >
                 {soundEnabled ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
                 <span>{soundEnabled ? 'Enabled' : 'Muted'}</span>
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="font-medium text-slate-200">Store Ambience</div>
+                <div className="text-[11px] text-slate-400">Intercom, Carts &amp; Lights</div>
+              </div>
+              <button
+                type="button"
+                onClick={onToggleAmbient}
+                className={`min-h-[38px] px-3 py-1.5 rounded-lg border font-semibold flex items-center gap-1.5 ${
+                  ambientEnabled
+                    ? 'bg-amber-950/60 border-amber-700 text-amber-200'
+                    : 'bg-slate-800 border-slate-700 text-slate-400'
+                }`}
+              >
+                {ambientEnabled ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
+                <span>{ambientEnabled ? 'Active' : 'Muted'}</span>
               </button>
             </div>
 

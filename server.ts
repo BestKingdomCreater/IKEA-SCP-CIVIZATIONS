@@ -26,6 +26,7 @@ const DIPLOMATIC_ACTIONS = [
   'VASSALIZE',
   'EMBARGO',
   'COALITION',
+  'CULTURAL_EXCHANGE',
   'REFORM_GOV',
 ] as const;
 
@@ -33,6 +34,15 @@ interface SummitNationInput {
   id: number;
   name: string;
   species?: 'human' | 'staff';
+  buildingPattern?: string;
+  cultureName?: string;
+  originSpecies?: 'human' | 'staff' | 'hybrid';
+  cultureTraits?: string[];
+  mixingScore?: number;
+  mixedWith?: string[];
+  borderPolicy?: string;
+  borderVigilance?: number;
+  greenCardsIssued?: number;
   gov: string;
   ideology: string;
   techTier: number;
@@ -178,6 +188,8 @@ async function startServer() {
       isNight?: boolean;
       activeAnomaly?: { label?: string; description?: string } | null;
       staffInvasionAlert?: { title?: string; detail?: string; enemyCount?: number; severity?: string } | null;
+      staffAlertTier?: 0 | 1 | 2;
+      staffPackMembers?: number;
       nations?: SummitNationInput[];
       history?: SummitHistoryEntry[];
       topic?: string;
@@ -206,6 +218,7 @@ The nation leaders have walked to the Neutral Showroom Lounge and are sitting do
 Current Store State (Day ${body.day ?? 1}, ${body.isNight ? 'Store Closed / Spotlights On' : 'Store Open'}):
 ${body.activeAnomaly?.label ? `Active Store Anomaly: ${body.activeAnomaly.label} (${body.activeAnomaly.description || ''})` : 'Active Store Anomaly: None'}
 ${body.staffInvasionAlert?.title ? `PA Invasion Radar Alert: [${body.staffInvasionAlert.severity || 'WARNING'}] ${body.staffInvasionAlert.title} — ${body.staffInvasionAlert.detail || ''} (${body.staffInvasionAlert.enemyCount || 0} Staff)` : 'PA Invasion Radar Alert: Clear'}
+Staff Human-Dominance Pack Alert: Tier ${body.staffAlertTier ?? 0} (${(body.staffAlertTier ?? 0) === 2 ? 'Heavy combined-arms Staff siege platoons grouping' : (body.staffAlertTier ?? 0) === 1 ? 'Wild Staff noticing human dominance and grouping into packs' : 'Dormant'}${body.staffPackMembers ? `, ${body.staffPackMembers} in active pack` : ''})
 Remaining Summit Time: ${remainingSec}s of ${totalDurationSec}s max (session limit <= 5 minutes).
 ${isClosing ? 'CLOSING TURN: Time is nearly up. The speaking leader should deliver a concise closing remark or final deal/ultimatum to conclude the lounge talk.' : ''}
 ${body.topic?.trim() ? `Moderator / Cosmic Voice Topic: "${body.topic.trim()}"` : ''}
@@ -219,8 +232,8 @@ ${history.length === 0 ? '(The leaders have just sat down on the showroom couche
 
 Instructions:
 1. Pick speakerNationId from [${nations.map((n) => n.id).join(', ')}] — prefer a different leader from the last speaker (${lastSpeakerId ?? 'none'}) so the leaders actually converse back-and-forth.
-2. Write 1 to 3 natural, witty, darkly comedic yet politically sharp sentences in-character as that leader addressing the other seated leaders by name or nation. Reference real SCP-3008 mechanics (meatballs, Allen wrenches, fortified Union corridors with flank barricades, Escort Guards & night trade carts, PA Invasion Radar alerts, Tier 5–6 tech like Rail-Nail Cannons, Arc-Barcode Casters, Sunlight Beacons, Repulsor Pylons, catalog civilian goods, Staff Kingdoms if species==="staff", Forklift Juggernauts, Shelf Quartermasters, Barcode Scanners, spotlights, or active anomalies).
-3. If the conversation naturally calls for a concrete diplomatic breakthrough or breakdown right now (and not on every turn—only when earned by the dialogue), include diplomaticAction using ONLY valid nation IDs from the seated list and allowed types: ${DIPLOMATIC_ACTIONS.join(', ')}. For REFORM_GOV, newGovernment must be one of: ${GOVERNMENTS.join(', ')}.
+2. Write 1 to 3 natural, witty, darkly comedic yet politically sharp sentences in-character as that leader addressing the other seated leaders by name or nation. Reference current SCP-3008 mechanics: Culture & Cultural Mixing (syncretic cultures, hybrid human-staff realms), Border Policies & Green Cards (Open Aisles, Green Card checks, Strict Inspection, Lockdown), Staff Kingdoms (Staff Directorate hubs, Breakroom Pods, Security Pylons), Human-Dominance Staff Pack Uprisings (wild Staff grouping up and attacking dominant human realms with Shift Technicians, Inventory Spotters, Spill-Sweepers, Warehouse Goliaths, Forklift Juggernauts, Barcode Scanners), Tier 7–8 tech (Hydraulic Exosuits, Twin-Bolt Turrets, Perpetual Daylight Array, Singularity Barcode Core), Union corridors, meatballs, Allen wrenches, and active anomalies.
+3. If the conversation naturally calls for a concrete diplomatic breakthrough or breakdown right now (and not on every turn—only when earned by the dialogue), include diplomaticAction using ONLY valid nation IDs from the seated list and allowed types: ${DIPLOMATIC_ACTIONS.join(', ')}. Use CULTURAL_EXCHANGE when nations agree to share Green Cards, relax border tension, or celebrate cultural mixing. For REFORM_GOV, newGovernment must be one of: ${GOVERNMENTS.join(', ')}.
 4. Set shouldConclude to true ONLY if this is a closing turn or the leaders have clearly wrapped up all business early.`;
 
     try {

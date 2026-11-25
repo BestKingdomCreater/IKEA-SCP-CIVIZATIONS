@@ -66,6 +66,10 @@ export const enum UnitKind {
   STAFF_THROWER = 10,
   STAFF_DISRUPTOR = 11,
   STAFF_DIRECTOR = 12,
+  STAFF_TECH = 13,
+  STAFF_SNIPER = 14,
+  STAFF_HAZMAT = 15,
+  STAFF_COLOSSUS = 16,
 }
 
 export function isStaffKind(kind: UnitKind): boolean {
@@ -79,7 +83,11 @@ export function isStaffKind(kind: UnitKind): boolean {
     kind === UnitKind.STAFF_FORKLIFT ||
     kind === UnitKind.STAFF_THROWER ||
     kind === UnitKind.STAFF_DISRUPTOR ||
-    kind === UnitKind.STAFF_DIRECTOR
+    kind === UnitKind.STAFF_DIRECTOR ||
+    kind === UnitKind.STAFF_TECH ||
+    kind === UnitKind.STAFF_SNIPER ||
+    kind === UnitKind.STAFF_HAZMAT ||
+    kind === UnitKind.STAFF_COLOSSUS
   );
 }
 
@@ -119,7 +127,8 @@ export type BuildingPattern =
   | 'Merchant Bazaar'
   | 'Showroom Plaza'
   | 'Cathedral Spire'
-  | 'Imperial Concourse';
+  | 'Imperial Concourse'
+  | 'Staff Directorate';
 
 export type BuildingSpacing = 'Crowded' | 'Balanced' | 'Spaced';
 
@@ -132,24 +141,32 @@ export type TechId =
   | 'civilian_catalog'
   | 'cold_chain_bunkers'
   | 'megastore_supply_net'
+  | 'civic_green_card_bureaus'
+  | 'automated_factory_aisles'
   | 'allen_spears'
   | 'watchtower_turrets'
   | 'siege_cart_rams'
   | 'pneumatic_nailguns'
   | 'kevlar_aprons'
   | 'heavy_rivet_cannons'
+  | 'hydraulic_breach_exosuits'
+  | 'orbital_spotlight_satellites'
   | 'halogen_floodlights'
   | 'fluorescent_ward'
   | 'blueprint_mastery'
   | 'maintenance_escalators'
   | 'staff_invasion_radar'
   | 'sunlight_beacons'
+  | 'cultural_atrium_plazas'
+  | 'perpetual_daylight_array'
   | 'swedish_schematics'
   | 'flatpack_automation'
   | 'fluorescent_capacitor'
   | 'halogen_rifles'
   | 'repulsor_pylons'
-  | 'quantum_barcodes';
+  | 'quantum_barcodes'
+  | 'anomalous_containment_fields'
+  | 'singularity_barcode_core';
 
 export type UnitTrait = 'Brave' | 'Speedy' | 'Hoarder' | 'Tough' | 'Pyromaniac' | 'Blessed';
 
@@ -166,6 +183,35 @@ export type Ideology =
   | 'Iron Fortress'
   | 'Meatball Zealots'
   | 'Expansionist Empire';
+
+export type CultureTrait =
+  | 'Flatpack Craft'
+  | 'Meatball Hospitality'
+  | 'Aisle Barricaders'
+  | 'Catalog Scholars'
+  | 'Open-Aisle Exchange'
+  | 'Uniform Protocol'
+  | 'Closing-Bell Discipline'
+  | 'Inventory Vigilance'
+  | 'Fluorescent Order'
+  | 'Syncretic Harmony';
+
+export type BorderPolicy = 'Open Aisles' | 'Green Card' | 'Strict Inspection' | 'Lockdown';
+
+export interface NationCulture {
+  name: string;
+  primaryCulture: string;
+  originSpecies: 'human' | 'staff' | 'hybrid';
+  traits: CultureTrait[];
+  composition: Record<string, number>;
+  mixingScore: number; // 0..100 progress toward cultural fusion
+  mixedWith: string[];
+  borderPolicy: BorderPolicy;
+  borderVigilance: number; // 0..100
+  greenCardsIssued: number;
+  borderChecks: number;
+  turnedBackCount: number;
+}
 
 export type DiplomaticStance =
   | 'NEUTRAL'
@@ -276,6 +322,7 @@ export interface Nation {
   lastAttackerNationId?: number;
   lastAttackedDay?: number;
   species?: 'human' | 'staff';
+  culture?: NationCulture;
   firearms?: number;
   civilianGoods?: number;
   weaponTier?: 0 | 1 | 2 | 3 | 4 | 5;
@@ -337,6 +384,15 @@ export interface Unit {
   teleportCooldown?: number;
   guardPostX?: number;
   guardPostY?: number;
+  cultureName?: string;
+  originCultureName?: string;
+  hasGreenCard?: boolean;
+  greenCardNationId?: number;
+  greenCardNationName?: string;
+  borderCheckCooldown?: number;
+  visitingNationId?: number;
+  visitingUntilSimTime?: number;
+  demolishTargetIdx?: number;
   alive: boolean;
 }
 
@@ -385,7 +441,9 @@ export type NewsCategory =
   | 'GROWTH'
   | 'FOUNDING'
   | 'CONQUEST'
-  | 'UNION';
+  | 'UNION'
+  | 'CULTURE'
+  | 'BORDER';
 
 export interface NewsItem {
   id: number;
@@ -408,6 +466,10 @@ export type ToolId =
   | 'spawn_thrower'
   | 'spawn_disruptor'
   | 'spawn_director'
+  | 'spawn_tech'
+  | 'spawn_sniper'
+  | 'spawn_hazmat'
+  | 'spawn_colossus'
   | 'spawn_trader'
   | 'spawn_caravan'
   | 'spawn_mercenary'
@@ -464,7 +526,9 @@ export type ChronicleEventType =
   | 'COUP'
   | 'GROWTH'
   | 'FALL'
-  | 'UNION';
+  | 'UNION'
+  | 'CULTURE'
+  | 'BORDER';
 
 export interface ChronicleEntry {
   id: number;
@@ -496,6 +560,7 @@ export interface CustomKingdomConfig {
   buildingPattern: BuildingPattern;
   buildingSpacing?: BuildingSpacing;
   startingPop: number;
+  species?: 'human' | 'staff';
 }
 
 export interface StaffInvasionAlert {
@@ -532,6 +597,8 @@ export interface HudSnapshot {
   auditNight?: boolean;
   activeAnomaly?: ActiveAnomaly | null;
   staffInvasionAlert?: StaffInvasionAlert | null;
+  staffAlertTier?: 0 | 1 | 2;
+  staffPackMembers?: number;
   allowWildStaffKingdoms?: boolean;
   infiniteWorldMode?: boolean;
   smartInfrastructureMode?: boolean;
@@ -572,6 +639,7 @@ export interface GeminiDiplomaticAction {
     | 'VASSALIZE'
     | 'EMBARGO'
     | 'COALITION'
+    | 'CULTURAL_EXCHANGE'
     | 'REFORM_GOV';
   actorNationId: number;
   targetNationId?: number;

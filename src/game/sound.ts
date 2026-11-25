@@ -117,6 +117,10 @@ class SoundManager {
     return this.ctx;
   }
 
+  public getContext(): AudioContext | null {
+    return this.ensureContext();
+  }
+
   public unlockAndStartMusic(): void {
     const ctx = this.ensureContext();
     if (!ctx) return;

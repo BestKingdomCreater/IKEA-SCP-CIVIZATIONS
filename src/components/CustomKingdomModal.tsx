@@ -1,6 +1,12 @@
 import React, { useState } from 'react';
 import { Flag, MapPin, Sparkles, X } from 'lucide-react';
-import { GOVERNMENTS, IDEOLOGIES, NATION_PALETTE, SETTLER_KINGDOM_NAMES } from '../game/constants';
+import {
+  GOVERNMENTS,
+  IDEOLOGIES,
+  NATION_PALETTE,
+  SETTLER_KINGDOM_NAMES,
+  STAFF_KINGDOM_NAMES,
+} from '../game/constants';
 import {
   BuildingPattern,
   BuildingSpacing,
@@ -21,6 +27,7 @@ const BUILDING_PATTERNS: BuildingPattern[] = [
   'Showroom Plaza',
   'Cathedral Spire',
   'Imperial Concourse',
+  'Staff Directorate',
 ];
 
 const SPACING_OPTIONS: Array<{ value: BuildingSpacing; label: string; hint: string }> = [
@@ -38,6 +45,7 @@ export const CustomKingdomModal: React.FC<CustomKingdomModalProps> = ({
   const defaultName =
     SETTLER_KINGDOM_NAMES[Math.floor(Math.random() * SETTLER_KINGDOM_NAMES.length)];
 
+  const [species, setSpecies] = useState<'human' | 'staff'>('human');
   const [name, setName] = useState<string>(defaultName);
   const [paletteIdx, setPaletteIdx] = useState<number>(
     Math.max(0, NATION_PALETTE.indexOf(defaultPalette))
@@ -51,8 +59,26 @@ export const CustomKingdomModal: React.FC<CustomKingdomModalProps> = ({
 
   const chosenPalette = NATION_PALETTE[paletteIdx] || NATION_PALETTE[0];
 
+  const handleSpeciesChange = (nextSpecies: 'human' | 'staff') => {
+    setSpecies(nextSpecies);
+    if (nextSpecies === 'staff') {
+      setBuildingPattern('Staff Directorate');
+      if (SETTLER_KINGDOM_NAMES.includes(name) || !name.trim()) {
+        setName(STAFF_KINGDOM_NAMES[Math.floor(Math.random() * STAFF_KINGDOM_NAMES.length)]);
+      }
+    } else {
+      if (buildingPattern === 'Staff Directorate') {
+        setBuildingPattern('Showroom Plaza');
+      }
+      if (STAFF_KINGDOM_NAMES.includes(name) || !name.trim()) {
+        setName(SETTLER_KINGDOM_NAMES[Math.floor(Math.random() * SETTLER_KINGDOM_NAMES.length)]);
+      }
+    }
+  };
+
   const buildConfig = (): CustomKingdomConfig => ({
     name: name.trim() || defaultName,
+    species,
     color: chosenPalette.color,
     borderColor: chosenPalette.border,
     government,
@@ -81,6 +107,39 @@ export const CustomKingdomModal: React.FC<CustomKingdomModalProps> = ({
         </div>
 
         <div className="pt-4 space-y-4 text-xs">
+          {/* Kingdom Species / Heritage */}
+          <div>
+            <span className="block text-[11px] font-medium text-slate-400 mb-1.5">
+              Kingdom Heritage
+            </span>
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                type="button"
+                onClick={() => handleSpeciesChange('human')}
+                className={`px-3 py-2 rounded-lg border text-left transition-colors ${
+                  species === 'human'
+                    ? 'bg-[#0058a3]/80 border-[#ffda1a] text-white'
+                    : 'bg-slate-900 border-slate-700 text-slate-300 hover:border-slate-500'
+                }`}
+              >
+                <div className="font-semibold text-[11px]">Human Survivors</div>
+                <div className="text-[10px] text-slate-300/80">IKEA huts, bistros &amp; wood walls</div>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSpeciesChange('staff')}
+                className={`px-3 py-2 rounded-lg border text-left transition-colors ${
+                  species === 'staff'
+                    ? 'bg-yellow-950/80 border-yellow-400 text-yellow-100'
+                    : 'bg-slate-900 border-slate-700 text-slate-300 hover:border-slate-500'
+                }`}
+              >
+                <div className="font-semibold text-[11px]">SCP-3008-2 Staff</div>
+                <div className="text-[10px] text-yellow-200/80">Breakroom pods, pylons &amp; hazard walls</div>
+              </button>
+            </div>
+          </div>
+
           {/* Kingdom Name */}
           <div>
             <label htmlFor="custom-kingdom-name" className="block text-[11px] font-medium text-slate-400 mb-1">

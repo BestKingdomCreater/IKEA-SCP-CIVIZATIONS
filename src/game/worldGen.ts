@@ -10,6 +10,8 @@ import {
   SURVIVOR_FIRST_NAMES,
   SURVIVOR_LAST_NAMES,
   TRAIT_POOL,
+  createInitialCulture,
+  HUMAN_CULTURES,
 } from './constants';
 import {
   BiomeType,
@@ -333,6 +335,11 @@ export function generateIkeaWorld(
 
     const gov = GOVERNMENTS[i % GOVERNMENTS.length];
     const ideology = IDEOLOGIES[i % IDEOLOGIES.length];
+    const starterCulture = createInitialCulture(
+      'human',
+      i,
+      gov === 'Iron Dictatorship' ? 'Green Card' : 'Open Aisles'
+    );
     const leaderName = randomName();
     const leaderUnit = spawnUnit(
       UnitKind.SURVIVOR,
@@ -343,6 +350,8 @@ export function generateIkeaWorld(
       leaderName,
       ['Brave', 'Tough']
     );
+    leaderUnit.cultureName = starterCulture.name;
+    leaderUnit.originCultureName = starterCulture.name;
 
     // Spawn 17 more citizens (18 total) with diverse jobs (only ~22% Army Guards)
     const starterRoles: SurvivorRole[] = [
@@ -368,18 +377,22 @@ export function generateIkeaWorld(
       const role = starterRoles[u] ?? SurvivorRole.SCAVENGER;
       const angle = (u / 17) * Math.PI * 2;
       const rad = 1.5 + Math.random() * 2.5;
-      spawnUnit(
+      const cu = spawnUnit(
         UnitKind.SURVIVOR,
         role,
         nid,
         cx + Math.cos(angle) * rad,
         cy + Math.sin(angle) * rad
       );
+      cu.cultureName = starterCulture.name;
+      cu.originCultureName = starterCulture.name;
     }
 
     const nation: Nation = {
       id: nid,
       name: pal.name,
+      species: 'human',
+      culture: starterCulture,
       color: pal.color,
       borderColor: pal.border,
       capitalX: cx,
@@ -454,13 +467,16 @@ export function generateIkeaWorld(
       prop[ty * GRID_W + tx] = PropType.NONE;
     }
     const isTrader = i % 10 === 0;
-    spawnUnit(
+    const wanderer = spawnUnit(
       UnitKind.SURVIVOR,
       isTrader ? SurvivorRole.TRADER : SurvivorRole.SCAVENGER,
       -1,
       wx,
       wy
     );
+    const wanderCulture = HUMAN_CULTURES[(i + 3) % HUMAN_CULTURES.length].name;
+    wanderer.cultureName = wanderCulture;
+    wanderer.originCultureName = wanderCulture;
   }
 
   // 4. Seed passive daytime SCP-3008-2 Staff strolling aisles (turn hostile at Night)

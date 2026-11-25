@@ -4,7 +4,7 @@ export interface ResearchNode {
   id: TechId;
   name: string;
   branch: ResearchBranch;
-  tier: 1 | 2 | 3 | 4 | 5 | 6;
+  tier: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
   cost: number;
   requires?: TechId;
   unlocksTag?: string;
@@ -79,6 +79,26 @@ export const RESEARCH_TREE: ResearchNode[] = [
     unlocksTag: '2x Trade Cadence & +50% Cargo',
     effectSummary: 'Halves trade cart dispatch timers, boosts trade yields +50%, and grants bonus scrap & wrenches per delivery.',
   },
+  {
+    id: 'civic_green_card_bureaus',
+    name: 'Civic Green Card Bureaus',
+    branch: 'economy',
+    tier: 7,
+    cost: 380,
+    requires: 'megastore_supply_net',
+    unlocksTag: '+20% Visa Approval & +35% Culture Mix',
+    effectSummary: 'Border checkpoints issue Green Cards faster (+20% approval), grant +35% cultural mixing, and earn +0.4 Wrenches per Green Card.',
+  },
+  {
+    id: 'automated_factory_aisles',
+    name: 'Automated Flat-Pack Foundries',
+    branch: 'economy',
+    tier: 8,
+    cost: 460,
+    requires: 'civic_green_card_bureaus',
+    unlocksTag: 'Zero-Scrap Craft & +30% Builder Speed',
+    effectSummary: 'Workshops & Tech Labs forge Firearms & Catalog Goods without draining scrap (+50% output), while Builders construct & dismantle 30% faster.',
+  },
 
   // Military & Siege
   {
@@ -139,6 +159,26 @@ export const RESEARCH_TREE: ResearchNode[] = [
     requires: 'kevlar_aprons',
     unlocksTag: 'Crafts Rail-Nail Cannons & +45% Turrets',
     effectSummary: 'Workshops arm soldiers with high-velocity Rail-Nail Cannons and upgrade Watchtower turrets (+45% damage, +2 range).',
+  },
+  {
+    id: 'hydraulic_breach_exosuits',
+    name: 'Hydraulic Exosuit Rigging',
+    branch: 'military',
+    tier: 7,
+    cost: 390,
+    requires: 'heavy_rivet_cannons',
+    unlocksTag: 'Exosuits (+45 HP, +6 ATK, +20% Army)',
+    effectSummary: 'Equips Guards, Generals, and Leaders with powered warehouse exosuits (+45 Max HP, +6 ATK, +12% speed) and +20% Army Cap.',
+  },
+  {
+    id: 'orbital_spotlight_satellites',
+    name: 'Rafter Twin-Bolt Turrets',
+    branch: 'military',
+    tier: 8,
+    cost: 470,
+    requires: 'hydraulic_breach_exosuits',
+    unlocksTag: 'Twin-Shot Watchtowers (+35% DMG, +3 Range)',
+    effectSummary: 'Watchtowers mount twin rail-turret barrels firing double salvos with +3 tile range, +35% damage, and higher velocity.',
   },
 
   // Lighting & Survival
@@ -201,6 +241,26 @@ export const RESEARCH_TREE: ResearchNode[] = [
     unlocksTag: '+4 Light Radius & Burns Night Staff',
     effectSummary: 'Expands all Spotlight, Watchtower & Flag safety zones by +4 tiles and sears feral Night Staff inside lit friendly tiles.',
   },
+  {
+    id: 'cultural_atrium_plazas',
+    name: 'Cultural Atrium Plazas',
+    branch: 'lighting',
+    tier: 7,
+    cost: 375,
+    requires: 'sunlight_beacons',
+    unlocksTag: '+10 Happiness, +40% Mix & 24h Territory Heal',
+    effectSummary: 'Bright atrium plazas keep citizens joyful (+10 Happiness), accelerate cultural mixing +40%, and heal citizens on friendly lit tiles day & night.',
+  },
+  {
+    id: 'perpetual_daylight_array',
+    name: 'Perpetual Daylight Array',
+    branch: 'lighting',
+    tier: 8,
+    cost: 465,
+    requires: 'cultural_atrium_plazas',
+    unlocksTag: '+5 Light Radius & 45% Night Staff Slow',
+    effectSummary: 'Expands all Spotlight, Watchtower & Flag zones +5 tiles, slows Night Staff 45% inside lit zones, and rapidly re-ignites sabotaged lights.',
+  },
 
   // SCP-IKEA R&D & Crafting
   {
@@ -262,6 +322,26 @@ export const RESEARCH_TREE: ResearchNode[] = [
     unlocksTag: 'Crafts Chain-Arc Casters & +18 Firearms',
     effectSummary: 'Tech Labs manufacture Arc-Barcode Casters that chain-shock clustered enemies, plus +18 firearms & +25 civilian goods.',
   },
+  {
+    id: 'anomalous_containment_fields',
+    name: 'Containment & Auto-Mend Fields',
+    branch: 'scp_tech',
+    tier: 7,
+    cost: 400,
+    requires: 'quantum_barcodes',
+    unlocksTag: 'Tech Labs Auto-Repair Walls & Slow Staff',
+    effectSummary: 'Tech Labs emit stabilizing fields that auto-repair nearby friendly barricades/gates/towers and slow hostile Night Staff.',
+  },
+  {
+    id: 'singularity_barcode_core',
+    name: 'Singularity Barcode Core',
+    branch: 'scp_tech',
+    tier: 8,
+    cost: 490,
+    requires: 'anomalous_containment_fields',
+    unlocksTag: '+45% Learn, Double Arc-Chain & +25 Firearms',
+    effectSummary: 'Unlocks peak SCP-3008 science (+45% RP/s, extra Arc-Caster chain bounce, +15% unit ATK, +25 firearms & +30 catalog goods).',
+  },
 ];
 
 export const RESEARCH_BY_ID: Record<TechId, ResearchNode> = RESEARCH_TREE.reduce(
@@ -272,9 +352,19 @@ export const RESEARCH_BY_ID: Record<TechId, ResearchNode> = RESEARCH_TREE.reduce
   {} as Record<TechId, ResearchNode>
 );
 
+const TECH_SET_CACHE = new WeakMap<TechId[], { len: number; set: Set<TechId> }>();
+
 export function hasTech(nation: Nation | undefined, techId: TechId): boolean {
   if (!nation || !nation.researchedTechs) return false;
-  return nation.researchedTechs.includes(techId);
+  const list = nation.researchedTechs;
+  const len = list.length;
+  if (len === 0) return false;
+  let cached = TECH_SET_CACHE.get(list);
+  if (!cached || cached.len !== len) {
+    cached = { len, set: new Set(list) };
+    TECH_SET_CACHE.set(list, cached);
+  }
+  return cached.set.has(techId);
 }
 
 export function canResearchTech(nation: Nation, node: ResearchNode): boolean {

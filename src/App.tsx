@@ -34,6 +34,7 @@ import {
 import { SimEngine } from './game/engine';
 import { hasTech } from './game/research';
 import { SerializedWorldV1 } from './game/saveLoad';
+import { ambientAudio } from './game/ambientAudio';
 import { soundFX } from './game/sound';
 import {
   BrushSize,
@@ -64,6 +65,7 @@ export default function App() {
   const [maxPop, setMaxPop] = useState<number>(isPhone ? 900 : 2000);
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
   const [musicEnabled, setMusicEnabled] = useState<boolean>(true);
+  const [ambientEnabled, setAmbientEnabled] = useState<boolean>(true);
   const [activeTool, setActiveTool] = useState<ToolId>(isCoarsePointer ? 'pan' : 'inspect');
   const [brushSize, setBrushSize] = useState<BrushSize>('M');
 
@@ -265,12 +267,23 @@ export default function App() {
           isNight: eng.isNight,
           activeAnomaly: eng.activeAnomaly,
           staffInvasionAlert: snap.staffInvasionAlert,
+          staffAlertTier: snap.staffAlertTier ?? 0,
+          staffPackMembers: snap.staffPackMembers ?? 0,
           nations: aliveNations.map((n) => ({
             id: n.id,
             name: n.name,
             gov: n.government,
             ideology: n.ideology,
             species: n.species,
+            buildingPattern: eng.getKingdomBuildingPattern(n),
+            cultureName: n.culture?.name ?? n.culture?.primaryCulture,
+            originSpecies: n.culture?.originSpecies,
+            cultureTraits: n.culture?.traits ?? [],
+            mixingScore: Math.round(n.culture?.mixingScore ?? 0),
+            mixedWith: n.culture?.mixedWith ?? [],
+            borderPolicy: n.culture?.borderPolicy ?? 'Open Aisles',
+            borderVigilance: Math.round(n.culture?.borderVigilance ?? 0),
+            greenCardsIssued: n.culture?.greenCardsIssued ?? 0,
             techTier: n.techTier,
             pop: n.population,
             meatballs: Math.round(n.meatballs),
@@ -338,7 +351,7 @@ export default function App() {
           if (res.diplomaticAction.type === 'REFORM_GOV' && res.diplomaticAction.newGovernment) {
             actionSummary = `${actor?.name ?? speaker.name} reformed into ${res.diplomaticAction.newGovernment}`;
           } else if (target) {
-            actionSummary = `${actor?.name ?? speaker.name} · ${target.name} — ${res.diplomaticAction.type.replace('_', ' ')}`;
+            actionSummary = `${actor?.name ?? speaker.name} · ${target.name} — ${res.diplomaticAction.type.replace(/_/g, ' ')}`;
           }
         }
 
@@ -510,6 +523,7 @@ export default function App() {
 
     const unlockAudio = () => {
       soundFX.unlockAndStartMusic();
+      ambientAudio.unlock();
     };
     window.addEventListener('pointerdown', unlockAudio, { once: true });
     window.addEventListener('keydown', unlockAudio, { once: true });
@@ -522,6 +536,13 @@ export default function App() {
         e.preventDefault();
         eng.paused = !eng.paused;
         soundFX.setPhase(eng.isNight, eng.paused);
+        ambientAudio.setPhase(
+          eng.isNight,
+          eng.isNight ? 1 : eng.cycleTimer / 35,
+          eng.paused,
+          eng.isNight && eng.day % 10 === 0,
+          eng.activeAnomaly?.type ?? null
+        );
         setHud(engineRef.current ? engineRef.current.getHudSnapshot(60) : eng.getHudSnapshot(60));
         return;
       }
@@ -533,7 +554,8 @@ export default function App() {
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
 
-    let currentDpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    const maxNativeDpr = isPhone ? 1.0 : Math.min(window.devicePixelRatio || 1, 1.25);
+    let currentDpr = maxNativeDpr;
     let lowFpsFrames = 0;
     let highFpsFrames = 0;
 
@@ -570,16 +592,15 @@ export default function App() {
       }
       eng.currentFps = fpsSmooth;
 
-      // Dynamic DPR governor keeps render thread >= 30 FPS on dense worlds or 10x speed
-      const maxNativeDpr = Math.min(window.devicePixelRatio || 1, 1.5);
-      if (fpsSmooth < 34) {
+      // Dynamic DPR governor targets >= 45 FPS on dense worlds or 10x speed
+      if (fpsSmooth < 45) {
         lowFpsFrames++;
         highFpsFrames = 0;
-        if (lowFpsFrames >= 60 && currentDpr > 1.0) {
+        if (lowFpsFrames >= 30 && currentDpr > 1.0) {
           currentDpr = 1.0;
           updateCanvasSize();
         }
-      } else if (fpsSmooth > 48) {
+      } else if (fpsSmooth > 55) {
         highFpsFrames++;
         lowFpsFrames = 0;
         if (highFpsFrames >= 180 && currentDpr < maxNativeDpr) {
@@ -611,8 +632,8 @@ export default function App() {
 
       if (!eng.paused && eng.speed > 0) {
         accumulator = Math.min(FIXED_DT * 3, accumulator + rawDt * eng.speed);
-        const simBudgetMs = fpsSmooth < 34 ? 3.5 : fpsSmooth < 44 ? 5.0 : 8.0;
-        const maxSubsteps = fpsSmooth < 32 ? 2 : fpsSmooth < 38 ? 4 : 10;
+        const simBudgetMs = fpsSmooth < 44 ? 3.2 : fpsSmooth < 50 ? 4.8 : 6.8;
+        const maxSubsteps = fpsSmooth < 42 ? 2 : fpsSmooth < 48 ? 4 : 8;
         const simStart = performance.now();
         let steps = 0;
         while (accumulator >= FIXED_DT && steps < maxSubsteps) {
@@ -628,7 +649,7 @@ export default function App() {
           accumulator = 0;
         }
       }
-      eng.particleScale = fpsSmooth < 35 ? 0.25 : fpsSmooth < 45 ? 0.4 : eng.isMobileViewport ? 0.5 : 1.0;
+      eng.particleScale = fpsSmooth < 42 ? 0.25 : fpsSmooth < 48 ? 0.45 : eng.isMobileViewport ? 0.5 : 1.0;
 
       if (followUnitIdRef.current !== null) {
         const targetUnit = eng.units.find((u) => u.alive && u.id === followUnitIdRef.current);
@@ -655,9 +676,18 @@ export default function App() {
         }
       }
 
-      if (now - lastHudSync >= 300) {
+      const hudSyncMs = fpsSmooth < 46 ? 450 : 380;
+      if (now - lastHudSync >= hudSyncMs) {
         lastHudSync = now;
-        setHud(eng.getHudSnapshot(fpsSmooth));
+        const snap = eng.getHudSnapshot(fpsSmooth);
+        ambientAudio.setPhase(
+          snap.isNight,
+          snap.cycleProgress,
+          snap.paused,
+          snap.auditNight,
+          snap.activeAnomaly?.type ?? null
+        );
+        setHud(snap);
         if (inspectedUnitIdRef.current !== null) {
           const liveUnit = eng.units.find((u) => u.alive && u.id === inspectedUnitIdRef.current);
           setInspectedUnit(liveUnit ? { ...liveUnit } : null);
@@ -698,6 +728,10 @@ export default function App() {
   useEffect(() => {
     soundFX.setMusicEnabled(musicEnabled);
   }, [musicEnabled]);
+
+  useEffect(() => {
+    ambientAudio.setEnabled(ambientEnabled);
+  }, [ambientEnabled]);
 
   // ==================== POINTER, TOUCH, PINCH-ZOOM & WHEEL INPUTS ====================
   const pointersRef = useRef<Map<number, PointerPos>>(new Map());
@@ -947,6 +981,10 @@ export default function App() {
           tool === 'spawn_thrower' ||
           tool === 'spawn_disruptor' ||
           tool === 'spawn_director' ||
+          tool === 'spawn_tech' ||
+          tool === 'spawn_sniper' ||
+          tool === 'spawn_hazmat' ||
+          tool === 'spawn_colossus' ||
           tool === 'spawn_caravan' ||
           tool === 'spawn_mercenary';
         if (isSingleTapPower) return;
@@ -1058,6 +1096,13 @@ export default function App() {
             engineRef.current.speed = spd;
             engineRef.current.paused = false;
             soundFX.setPhase(engineRef.current.isNight, false);
+            ambientAudio.setPhase(
+              engineRef.current.isNight,
+              engineRef.current.isNight ? 1 : engineRef.current.cycleTimer / 35,
+              false,
+              engineRef.current.isNight && engineRef.current.day % 10 === 0,
+              engineRef.current.activeAnomaly?.type ?? null
+            );
             setHud(engineRef.current.getHudSnapshot(hud.fps));
           }
         }}
@@ -1065,11 +1110,19 @@ export default function App() {
           if (engineRef.current) {
             engineRef.current.paused = !engineRef.current.paused;
             soundFX.setPhase(engineRef.current.isNight, engineRef.current.paused);
+            ambientAudio.setPhase(
+              engineRef.current.isNight,
+              engineRef.current.isNight ? 1 : engineRef.current.cycleTimer / 35,
+              engineRef.current.paused,
+              engineRef.current.isNight && engineRef.current.day % 10 === 0,
+              engineRef.current.activeAnomaly?.type ?? null
+            );
             setHud(engineRef.current.getHudSnapshot(hud.fps));
           }
         }}
         onToggleMusic={() => {
           soundFX.unlockAndStartMusic();
+          ambientAudio.unlock();
           setMusicEnabled((m) => !m);
         }}
         onOpenGeminiModal={() => setShowGeminiModal(true)}
@@ -1252,6 +1305,12 @@ export default function App() {
               engineRef.current.setNationBuildingSpacing(nid, spacing);
               setHud(engineRef.current.getHudSnapshot(hud.fps));
             }}
+            onSetBorderPolicy={(nid, policy) => {
+              if (!engineRef.current) return;
+              soundFX.playChime(560, 0.06);
+              engineRef.current.setNationBorderPolicy(nid, policy);
+              setHud(engineRef.current.getHudSnapshot(hud.fps));
+            }}
             onSpawnUnitsForNation={(nid, unitType) => {
               if (!engineRef.current) return;
               soundFX.playChime(580, 0.06);
@@ -1308,6 +1367,8 @@ export default function App() {
             messages={summitMessages}
             activeAnomaly={hud.activeAnomaly}
             staffInvasionAlert={hud.staffInvasionAlert}
+            staffAlertTier={hud.staffAlertTier}
+            staffPackMembers={hud.staffPackMembers}
             sessionActive={summitSessionActive}
             sessionPaused={summitSessionPaused}
             loadingTurn={summitTurnLoading}
@@ -1340,6 +1401,7 @@ export default function App() {
           <InspectUnitModal
             unit={inspectedUnit}
             nation={inspectedUnitNation}
+            nations={livingNations}
             isFollowing={followUnitId === inspectedUnit.id}
             onToggleFollow={() => {
               setFollowUnitId((prev) => (prev === inspectedUnit.id ? null : inspectedUnit.id));
@@ -1357,6 +1419,19 @@ export default function App() {
               const eng = engineRef.current;
               if (!eng) return;
               const res = eng.giveUnitGift(unitId, action);
+              if (res.ok) {
+                soundFX.playPower();
+              } else {
+                soundFX.playChime(220, 0.08, 'sawtooth');
+              }
+              const updated = eng.units.find((u) => u.alive && u.id === unitId);
+              setInspectedUnit(updated ? { ...updated } : null);
+              setHud(eng.getHudSnapshot(hud.fps));
+            }}
+            onGrantGreenCard={(unitId, hostNationId) => {
+              const eng = engineRef.current;
+              if (!eng) return;
+              const res = eng.grantUnitGreenCard(unitId, hostNationId);
               if (res.ok) {
                 soundFX.playPower();
               } else {
@@ -1406,6 +1481,16 @@ export default function App() {
               setHud(engineRef.current.getHudSnapshot(hud.fps));
               soundFX.playChime(180, 0.12, 'sawtooth');
             }}
+            onBuilderDemolish={(idx) => {
+              if (!engineRef.current) return;
+              const res = engineRef.current.queueBuilderBarricadeDemolish(idx);
+              if (res.ok) {
+                soundFX.playPower();
+              } else {
+                soundFX.playChime(220, 0.08, 'sawtooth');
+              }
+              setHud(engineRef.current.getHudSnapshot(hud.fps));
+            }}
           />
         )}
       </div>
@@ -1441,6 +1526,7 @@ export default function App() {
           worldPreset={worldPreset}
           soundEnabled={soundEnabled}
           musicEnabled={musicEnabled}
+          ambientEnabled={ambientEnabled}
           allowWildStaffKingdoms={Boolean(hud.allowWildStaffKingdoms)}
           infiniteWorldMode={Boolean(hud.infiniteWorldMode)}
           smartInfrastructureMode={hud.smartInfrastructureMode !== false}
@@ -1450,7 +1536,13 @@ export default function App() {
           onToggleSound={() => setSoundEnabled((s) => !s)}
           onToggleMusic={() => {
             soundFX.unlockAndStartMusic();
+            ambientAudio.unlock();
             setMusicEnabled((m) => !m);
+          }}
+          onToggleAmbient={() => {
+            soundFX.unlockAndStartMusic();
+            ambientAudio.unlock();
+            setAmbientEnabled((a) => !a);
           }}
           onToggleWildStaffKingdoms={() => {
             if (!engineRef.current) return;

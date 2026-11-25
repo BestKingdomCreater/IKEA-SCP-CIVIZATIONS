@@ -24,42 +24,47 @@ interface UpdateSection {
 const UPDATE_HISTORY: UpdateSection[] = [
   {
     version: 'Latest Update',
-    title: 'Mega-Showroom Boss, Rail/Arc Turrets & Flag Customizer',
+    title: 'Tier 7–8 Tech, 4 New Staff Classes, Culture & Builder Demolition',
     badge: 'NEW',
     accent: 'text-[#ffda1a]',
     items: [
       {
-        label: 'Mega-Showroom Boss: Rogue Store Director (Day 25+)',
+        label: '32 Technologies (Tiers 1–8 Across All 4 Branches)',
         detail:
-          'Every 25 nights (or spawned manually via the Director tool / Inspect menu), a massive Store Director marches with a crimson-gold rally aura, PA Megaphone ranged blasts, siege strength, and huge Director-Slayer loot drops.',
+          'Research Green Card Bureaus, Automated Factory Aisles, Hydraulic Breach Exosuits, Orbital Spotlight Satellites, Cultural Atrium Plazas, Perpetual Daylight Arrays, Anomalous Containment Fields, and Singularity Barcode Cores.',
       },
       {
-        label: 'Railgun & Arc-Tesla Watchtower Turrets',
+        label: '4 New SCP-3008-2 Staff Types & Dominance Packs',
         detail:
-          'Unlocking Heavy Rivet Rail-Cannons or Quantum Barcodes visually upgrades kingdom Watchtowers with glowing orange rail mounts or neon magenta Tesla spires that fire piercing rail slugs and chaining arc lightning.',
+          'When humans dominate the store, wild Staff rally into coordinated Tier 1–2 night attack packs featuring Shift Technicians (healers/gate hackers), Inventory Spotters (long-range snipers), Spill-Sweepers (corrosive AOE), and Warehouse Goliaths (siege cleave titans).',
       },
       {
-        label: 'Union Flag & Banner Customization',
+        label: 'Culture Mixing, Border Policies & Green Cards',
         detail:
-          'Customize primary colors, secondary trim, Split/Striped/Crowned patterns, and emblems (Crown, Shield, Cart, Star, Bolt) in any Kingdom panel. Grand Unions automatically adopt split crowned banners on flags, towers, and HUD.',
+          'Staff kingdoms build distinct Uniform Depots and Shift Quarters with Staff culture, while visiting survivors mix cultures over time and kingdoms enforce Open Aisles, Passport Checks, Green Card Permits, or Closed Borders.',
       },
       {
-        label: 'Fortified Union Corridors & Night Trade',
+        label: 'Builders Dismantle & Delete Obsolete Barricades',
         detail:
-          'Union Pacts and Grand Unions fortify linking corridors with flank barricades, spotlights, watchtowers, and Corridor Escort Guards so Union trade carts keep rolling safely through the night.',
+          'Kingdom Builders autonomously dismantle interior, walkway-blocking, or Union-border barricades to salvage Scrap and Allen Wrenches—or dispatch one manually via Builder Delete in the Building Inspector.',
       },
       {
-        label: 'PA Invasion Radar, Tier 5–6 Tech & New Staff Types',
+        label: 'Upgraded Live Summit Lounge & Cultural Exchange',
         detail:
-          'Research PA Motion Sensors for Staff Invasion Alerts, climb all 24 techs through Tier 6, and face Forklift Juggernauts, Shelf Quartermasters, and Barcode Scanners.',
+          'Summit Lounge leaders now debate Green Cards, Cultural Mixing, Staff Dominance Packs, and Tier 7–8 tech—and can sign Cultural Exchange accords alongside Treaties, Unions, and Trade Deals.',
       },
     ],
   },
   {
     version: 'Recent Milestones',
-    title: 'Infrastructure, Infinite Store & Species Powers',
+    title: 'Mega-Showroom Boss, Union Corridors & Infinite Store',
     accent: 'text-sky-300',
     items: [
+      {
+        label: 'Mega-Showroom Boss, Railguns & Arc-Tesla Turrets',
+        detail:
+          'Face the Rogue Store Director every 25 nights, upgrade Watchtowers with piercing Railguns and chaining Arc-Tesla spires, and customize Union banners and emblems.',
+      },
       {
         label: 'Smart Infrastructure & 4-Gate Citadels',
         detail:
@@ -107,20 +112,20 @@ export const UpdatesModal: React.FC<UpdatesModalProps> = ({ onClose }) => {
           {/* Quick feature icon strip */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             <div className="p-2 rounded-lg bg-slate-900/90 border border-slate-800 flex items-center gap-2">
-              <Shield className="w-3.5 h-3.5 text-amber-300 shrink-0" />
-              <span className="text-[11px] font-medium text-slate-200">Union Corridors</span>
-            </div>
-            <div className="p-2 rounded-lg bg-slate-900/90 border border-slate-800 flex items-center gap-2">
-              <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
-              <span className="text-[11px] font-medium text-slate-200">PA Invasion Radar</span>
-            </div>
-            <div className="p-2 rounded-lg bg-slate-900/90 border border-slate-800 flex items-center gap-2">
               <FlaskConical className="w-3.5 h-3.5 text-cyan-300 shrink-0" />
-              <span className="text-[11px] font-medium text-slate-200">24 Techs (T1–T6)</span>
+              <span className="text-[11px] font-medium text-slate-200">32 Techs (T1–T8)</span>
             </div>
             <div className="p-2 rounded-lg bg-slate-900/90 border border-slate-800 flex items-center gap-2">
               <Swords className="w-3.5 h-3.5 text-yellow-300 shrink-0" />
-              <span className="text-[11px] font-medium text-slate-200">3 New Staff Types</span>
+              <span className="text-[11px] font-medium text-slate-200">4 New Staff Classes</span>
+            </div>
+            <div className="p-2 rounded-lg bg-slate-900/90 border border-slate-800 flex items-center gap-2">
+              <Shield className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+              <span className="text-[11px] font-medium text-slate-200">Builder Demolition</span>
+            </div>
+            <div className="p-2 rounded-lg bg-slate-900/90 border border-slate-800 flex items-center gap-2">
+              <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+              <span className="text-[11px] font-medium text-slate-200">Staff Pack Uprising</span>
             </div>
           </div>
 

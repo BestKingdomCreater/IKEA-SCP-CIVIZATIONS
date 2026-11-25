@@ -1,5 +1,6 @@
 import React from 'react';
 import { Hammer, ShieldAlert, Trash2, Users, Wrench, X } from 'lucide-react';
+import { getBuildingDisplayMeta } from '../game/constants';
 import { InspectedBuilding, Nation, PropType, SurvivorRole } from '../game/types';
 
 interface InspectBuildingModalProps {
@@ -10,62 +11,8 @@ interface InspectBuildingModalProps {
   onInspectOccupant: (unitId: number) => void;
   onRepair: (idx: number) => void;
   onDemolish: (idx: number) => void;
+  onBuilderDemolish?: (idx: number) => void;
 }
-
-const BUILDING_INFO: Partial<Record<PropType, { name: string; role: string }>> = {
-  [PropType.MATTRESS_HUT]: {
-    name: 'Mattress Hut',
-    role: 'Houses citizens (+housing cap) & heals/shelters weary survivors at night.',
-  },
-  [PropType.BISTRO]: {
-    name: 'Meatball Bistro',
-    role: 'Chefs cook meatballs inside and feed hungry citizens.',
-  },
-  [PropType.WORKSHOP]: {
-    name: 'Wrench Workshop',
-    role: 'Tinkers forge Allen Wrenches & craft stronger gear.',
-  },
-  [PropType.ARCHIVE]: {
-    name: 'Billy Archive',
-    role: 'Tinkers & scholars boost Research Points toward kingdom techs.',
-  },
-  [PropType.CART_DEPOT]: {
-    name: 'Shopping Cart Depot',
-    role: 'Logistics hub where Traders & Trade Carts dispatch shipments.',
-  },
-  [PropType.WATCHTOWER]: {
-    name: 'Guard Watchtower',
-    role: 'Illuminates borders and fires defensive bolts at Night Staff & raiders.',
-  },
-  [PropType.SPOTLIGHT]: {
-    name: 'Emergency Spotlight',
-    role: 'Keeps the endless store lit at night to repel SCP-3008-2 Staff.',
-  },
-  [PropType.CHECKOUT_FLAG]: {
-    name: 'Checkout Flag (Capital)',
-    role: 'Kingdom heart and illuminated safe zone. Conquer to defeat this realm.',
-  },
-  [PropType.BARRICADE_WALL]: {
-    name: 'Furniture Barricade',
-    role: 'Fortified Swedish shelf/sofa wall blocking raiders & Night Staff.',
-  },
-  [PropType.BARRICADE_GATE]: {
-    name: 'Barricade Gate',
-    role: 'Allows friendly & allied units through while blocking enemies.',
-  },
-  [PropType.TECH_LAB]: {
-    name: 'SCP-IKEA Tech Lab',
-    role: 'Tinkers research new technology, craft firearms & civilian goods, and fire Arc Capacitors once unlocked.',
-  },
-  [PropType.ESCALATOR]: {
-    name: 'Maintenance Escalator',
-    role: 'Sub-floor fast-travel tunnel connecting owned & allied Escalators across the store.',
-  },
-  [PropType.MEATBALL_VAT]: {
-    name: 'Food Court Meatball Vat',
-    role: 'Simmering Swedish meatball cauldron where scavengers and chefs harvest fresh rations.',
-  },
-};
 
 const ROLE_LABELS: Record<SurvivorRole, string> = {
   [SurvivorRole.SCAVENGER]: 'Scavenger',
@@ -87,13 +34,14 @@ export const InspectBuildingModal: React.FC<InspectBuildingModalProps> = ({
   onInspectOccupant,
   onRepair,
   onDemolish,
+  onBuilderDemolish,
 }) => {
-  const info = BUILDING_INFO[building.prop] ?? {
-    name: 'Store Structure',
-    role: 'Constructed sector structure.',
-  };
+  const isStaff = nation?.species === 'staff';
+  const info = getBuildingDisplayMeta(building.prop, isStaff);
   const hpPct = Math.max(0, Math.min(100, Math.round((building.hp / building.maxHp) * 100)));
   const isFlag = building.prop === PropType.CHECKOUT_FLAG;
+  const isBarricade =
+    building.prop === PropType.BARRICADE_WALL || building.prop === PropType.BARRICADE_GATE;
 
   return (
     <div className="pointer-events-auto fixed inset-x-4 bottom-20 sm:inset-x-auto sm:left-4 sm:bottom-20 z-40 w-auto sm:w-[310px] max-h-[82vh] overflow-y-auto bg-[#11161f]/96 backdrop-blur-md border border-slate-700 rounded-xl shadow-2xl p-4 text-xs text-slate-200">
@@ -101,7 +49,7 @@ export const InspectBuildingModal: React.FC<InspectBuildingModalProps> = ({
         <div>
           <h3 className="font-display text-base font-bold text-white">{info.name}</h3>
           <p className="text-[11px] text-slate-400 font-mono-tabular">
-            Sector ({building.tx}, {building.ty})
+            {isStaff ? 'Staff Directorate · ' : ''}Sector ({building.tx}, {building.ty})
           </p>
         </div>
         <button
@@ -114,7 +62,14 @@ export const InspectBuildingModal: React.FC<InspectBuildingModalProps> = ({
         </button>
       </div>
 
-      <p className="pt-2.5 text-[11px] text-slate-300 leading-relaxed">{info.role}</p>
+      <p className="pt-2.5 text-[11px] text-slate-300 leading-relaxed">
+        {info.subtitle}
+        {building.prop === PropType.BARRICADE_GATE && nation?.culture && (
+          <span className="block mt-1 text-emerald-300 font-medium">
+            Active Checkpoint Policy: {nation.culture.borderPolicy}
+          </span>
+        )}
+      </p>
 
       <div className="pt-3 space-y-2.5 font-mono-tabular">
         <div>
@@ -202,24 +157,37 @@ export const InspectBuildingModal: React.FC<InspectBuildingModalProps> = ({
           </div>
         )}
 
-        <div className="pt-2 border-t border-slate-800 flex items-center gap-2 font-sans">
+        <div className="pt-2 border-t border-slate-800 flex flex-wrap items-center gap-2 font-sans">
           <button
             type="button"
             onClick={() => onRepair(building.idx)}
-            className="flex-1 min-h-[34px] px-2.5 py-1.5 rounded-lg bg-emerald-950/70 hover:bg-emerald-900/80 border border-emerald-700/70 text-emerald-200 font-semibold flex items-center justify-center gap-1.5"
+            className="flex-1 min-w-[90px] min-h-[34px] px-2.5 py-1.5 rounded-lg bg-emerald-950/70 hover:bg-emerald-900/80 border border-emerald-700/70 text-emerald-200 font-semibold flex items-center justify-center gap-1.5"
           >
             <Wrench className="w-3.5 h-3.5" />
             <span>Repair</span>
           </button>
           {!isFlag ? (
-            <button
-              type="button"
-              onClick={() => onDemolish(building.idx)}
-              className="flex-1 min-h-[34px] px-2.5 py-1.5 rounded-lg bg-rose-950/70 hover:bg-rose-900/80 border border-rose-700/70 text-rose-200 font-semibold flex items-center justify-center gap-1.5"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>Demolish</span>
-            </button>
+            <>
+              {isBarricade && onBuilderDemolish && (
+                <button
+                  type="button"
+                  onClick={() => onBuilderDemolish(building.idx)}
+                  className="flex-1 min-w-[105px] min-h-[34px] px-2.5 py-1.5 rounded-lg bg-amber-950/70 hover:bg-amber-900/80 border border-amber-700/70 text-amber-200 font-semibold flex items-center justify-center gap-1.5"
+                  title="Dispatch a Builder to dismantle this barricade and salvage Scrap & Allen Wrenches"
+                >
+                  <Hammer className="w-3.5 h-3.5" />
+                  <span>Builder Delete</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => onDemolish(building.idx)}
+                className="flex-1 min-w-[90px] min-h-[34px] px-2.5 py-1.5 rounded-lg bg-rose-950/70 hover:bg-rose-900/80 border border-rose-700/70 text-rose-200 font-semibold flex items-center justify-center gap-1.5"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Demolish</span>
+              </button>
+            </>
           ) : (
             <div className="flex-1 min-h-[34px] px-2 py-1.5 rounded-lg bg-slate-900/70 border border-slate-800 text-slate-500 text-[10px] flex items-center justify-center gap-1">
               <Hammer className="w-3 h-3" />

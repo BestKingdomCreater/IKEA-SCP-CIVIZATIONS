@@ -1,5 +1,5 @@
-import React from 'react';
-import { Award, Crosshair, Crown, HeartHandshake, Home, ShieldAlert, Sparkles, X, Zap } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Award, BadgeCheck, Crosshair, Crown, HeartHandshake, Home, ShieldAlert, Sparkles, X, Zap } from 'lucide-react';
 import { WEAPON_LABELS } from '../game/constants';
 import { isStaffKind, Nation, SurvivorRole, Unit, UnitKind } from '../game/types';
 
@@ -14,17 +14,23 @@ export type UnitGiftAction =
   | 'promote_manager'
   | 'promote_forklift'
   | 'promote_director'
+  | 'promote_colossus'
+  | 'promote_tech'
+  | 'promote_sniper'
+  | 'promote_hazmat'
   | 'charter_human'
   | 'charter_staff';
 
 interface InspectUnitModalProps {
   unit: Unit;
   nation?: Nation;
+  nations?: Nation[];
   isFollowing: boolean;
   onToggleFollow: () => void;
   onClose: () => void;
   onOpenNation: (nationId: number) => void;
   onUnitAction?: (unitId: number, action: UnitGiftAction) => void;
+  onGrantGreenCard?: (unitId: number, hostNationId: number) => void;
 }
 
 const ROLE_NAMES: Record<SurvivorRole, string> = {
@@ -42,12 +48,22 @@ const ROLE_NAMES: Record<SurvivorRole, string> = {
 export const InspectUnitModal: React.FC<InspectUnitModalProps> = ({
   unit,
   nation,
+  nations = [],
   isFollowing,
   onToggleFollow,
   onClose,
   onOpenNation,
   onUnitAction,
+  onGrantGreenCard,
 }) => {
+  const greenCardTargets = nations.filter((n) => n.alive && n.id !== unit.nationId);
+  const [greenCardHostId, setGreenCardHostId] = useState<number>(greenCardTargets[0]?.id ?? -1);
+
+  useEffect(() => {
+    const first = nations.find((n) => n.alive && n.id !== unit.nationId);
+    setGreenCardHostId(first ? first.id : -1);
+  }, [unit.id, unit.nationId, nations]);
+
   const isStaff = isStaffKind(unit.kind);
   const kindLabel =
     unit.isCaravan
@@ -72,15 +88,23 @@ export const InspectUnitModal: React.FC<InspectUnitModalProps> = ({
                         ? 'SCP-3008-2 Barcode Scanner · EMP Jammer'
                         : unit.kind === UnitKind.STAFF_DIRECTOR
                           ? 'SCP-3008-2 Store Director · Mega Boss'
-                          : unit.kind === UnitKind.STAFF_MANAGER
-                            ? 'SCP-3008-2 Manager Brute'
-                            : unit.kind === UnitKind.STAFF_CRAWLER
-                              ? 'SCP-3008-2 Fast Crawler'
-                              : isStaff
-                                ? nation
-                                  ? 'SCP-3008-2 Citizen'
-                                  : 'SCP-3008-2 Entity'
-                                : ROLE_NAMES[unit.role];
+                          : unit.kind === UnitKind.STAFF_TECH
+                            ? 'SCP-3008-2 Shift Technician · Healer & Gate Hack'
+                            : unit.kind === UnitKind.STAFF_SNIPER
+                              ? 'SCP-3008-2 Inventory Spotter · Long-Range'
+                              : unit.kind === UnitKind.STAFF_HAZMAT
+                                ? 'SCP-3008-2 Spill-Sweeper · Corrosive Spray'
+                                : unit.kind === UnitKind.STAFF_COLOSSUS
+                                  ? 'SCP-3008-2 Warehouse Goliath · Cleave Titan'
+                                  : unit.kind === UnitKind.STAFF_MANAGER
+                                    ? 'SCP-3008-2 Manager Brute'
+                                    : unit.kind === UnitKind.STAFF_CRAWLER
+                                      ? 'SCP-3008-2 Fast Crawler'
+                                      : isStaff
+                                        ? nation
+                                          ? 'SCP-3008-2 Citizen'
+                                          : 'SCP-3008-2 Entity'
+                                        : ROLE_NAMES[unit.role];
   const isInsideBuilding = (unit.insideTimer ?? 0) > 0;
   const weaponLabel = unit.weapon ? (WEAPON_LABELS[unit.weapon] ?? unit.weapon) : WEAPON_LABELS.none;
 
@@ -151,6 +175,23 @@ export const InspectUnitModal: React.FC<InspectUnitModalProps> = ({
           <div className="flex justify-between gap-2">
             <span className="text-slate-400">Relic</span>
             <span className="text-right text-amber-300 truncate">{unit.heroRelic}</span>
+          </div>
+        )}
+        {unit.cultureName && (
+          <div className="flex justify-between gap-2 font-sans">
+            <span className="text-slate-400">Culture</span>
+            <span className="text-right text-pink-300 truncate">
+              {unit.cultureName}
+              {unit.originCultureName && unit.originCultureName !== unit.cultureName
+                ? ` (${unit.originCultureName})`
+                : ''}
+            </span>
+          </div>
+        )}
+        {unit.hasGreenCard && (
+          <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-emerald-950/60 border border-emerald-600/60 text-emerald-200 font-sans text-[11px]">
+            <BadgeCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+            <span className="truncate">Green Card Holder · {unit.greenCardNationName || 'Foreign Realm'}</span>
           </div>
         )}
         {isStaff && unit.pacified && (
@@ -258,6 +299,34 @@ export const InspectUnitModal: React.FC<InspectUnitModalProps> = ({
                   </button>
                   <button
                     type="button"
+                    onClick={() => onUnitAction(unit.id, 'promote_tech')}
+                    className="px-2 py-1 rounded-lg bg-cyan-950/60 hover:bg-cyan-900/70 border border-cyan-700/70 text-cyan-200 text-[10px] font-semibold"
+                  >
+                    Evolve Tech
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onUnitAction(unit.id, 'promote_sniper')}
+                    className="px-2 py-1 rounded-lg bg-rose-950/60 hover:bg-rose-900/70 border border-rose-700/70 text-rose-200 text-[10px] font-semibold"
+                  >
+                    Evolve Spotter
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onUnitAction(unit.id, 'promote_hazmat')}
+                    className="px-2 py-1 rounded-lg bg-lime-950/60 hover:bg-lime-900/70 border border-lime-700/70 text-lime-200 text-[10px] font-semibold"
+                  >
+                    Evolve Hazmat
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onUnitAction(unit.id, 'promote_colossus')}
+                    className="px-2 py-1 rounded-lg bg-orange-950/70 hover:bg-orange-900/80 border border-orange-500/70 text-orange-100 text-[10px] font-semibold"
+                  >
+                    Evolve Goliath
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => onUnitAction(unit.id, 'promote_director')}
                     className="col-span-2 px-2 py-1 rounded-lg bg-rose-950/75 hover:bg-rose-900/80 border border-rose-500/70 text-rose-100 text-[10px] font-semibold flex items-center justify-center gap-1"
                   >
@@ -330,6 +399,34 @@ export const InspectUnitModal: React.FC<InspectUnitModalProps> = ({
                 <Sparkles className="w-3 h-3 text-[#ffda1a]" />
                 <span>Divine Blessing (+HP &amp; ATK)</span>
               </button>
+              {onGrantGreenCard && greenCardTargets.length > 0 && (
+                <div className="col-span-2 flex items-center gap-1 pt-1">
+                  <select
+                    value={greenCardHostId >= 0 ? greenCardHostId : greenCardTargets[0].id}
+                    onChange={(e) => setGreenCardHostId(Number(e.target.value))}
+                    className="flex-1 min-w-0 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-[10px] text-slate-200 focus:outline-none focus:border-emerald-500"
+                  >
+                    {greenCardTargets.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onGrantGreenCard(
+                        unit.id,
+                        greenCardHostId >= 0 ? greenCardHostId : greenCardTargets[0].id
+                      )
+                    }
+                    className="px-2 py-1 rounded-lg bg-emerald-950/75 hover:bg-emerald-900/80 border border-emerald-600/70 text-emerald-200 text-[10px] font-semibold whitespace-nowrap flex items-center gap-1"
+                  >
+                    <BadgeCheck className="w-3 h-3" />
+                    <span>Green Card</span>
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         )}

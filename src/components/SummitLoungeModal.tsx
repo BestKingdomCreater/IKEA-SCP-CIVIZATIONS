@@ -27,6 +27,8 @@ interface SummitLoungeModalProps {
   messages: SummitLoungeMessage[];
   activeAnomaly?: ActiveAnomaly | null;
   staffInvasionAlert?: StaffInvasionAlert | null;
+  staffAlertTier?: 0 | 1 | 2;
+  staffPackMembers?: number;
   sessionActive: boolean;
   sessionPaused: boolean;
   loadingTurn: boolean;
@@ -65,6 +67,8 @@ export const SummitLoungeModal: React.FC<SummitLoungeModalProps> = ({
   messages,
   activeAnomaly,
   staffInvasionAlert,
+  staffAlertTier,
+  staffPackMembers,
   sessionActive,
   sessionPaused,
   loadingTurn,
@@ -279,7 +283,20 @@ export const SummitLoungeModal: React.FC<SummitLoungeModalProps> = ({
                         </div>
                         <div className="text-[10px] text-slate-400 truncate">
                           {nation.name} · T{nation.techTier}
+                          {nation.culture ? ` · ${nation.culture.name}` : ''}
                         </div>
+                        {nation.culture && (
+                          <div className="flex items-center gap-1 mt-0.5 flex-wrap">
+                            <span className="px-1 py-0.2 rounded bg-slate-800 border border-slate-700 text-emerald-300 text-[9px] font-medium truncate">
+                              {nation.culture.borderPolicy}
+                            </span>
+                            {nation.culture.mixingScore >= 18 && (
+                              <span className="px-1 py-0.2 rounded bg-pink-950/60 border border-pink-700/50 text-pink-200 text-[9px] font-medium">
+                                Mixed {Math.round(nation.culture.mixingScore)}%
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </div>
                     </div>
                     <span
@@ -333,6 +350,27 @@ export const SummitLoungeModal: React.FC<SummitLoungeModalProps> = ({
               <span className="font-mono-tabular text-[10px] shrink-0">
                 {staffInvasionAlert.enemyCount} Staff
               </span>
+            </div>
+          )}
+
+          {(staffAlertTier ?? 0) >= 1 && (
+            <div
+              className={`rounded-lg border px-2.5 py-2 text-[11px] flex items-center justify-between gap-2 ${
+                staffAlertTier === 2
+                  ? 'border-rose-500/50 bg-rose-950/45 text-rose-200'
+                  : 'border-orange-500/50 bg-orange-950/45 text-orange-200'
+              }`}
+            >
+              <span className="font-semibold truncate">
+                {staffAlertTier === 2
+                  ? 'Tier 2: Heavy Staff Siege Platoons'
+                  : 'Tier 1: Staff Pack Uprising'}
+              </span>
+              {(staffPackMembers ?? 0) > 0 && (
+                <span className="font-mono-tabular text-[10px] shrink-0">
+                  {staffPackMembers} in pack
+                </span>
+              )}
             </div>
           )}
 
@@ -430,8 +468,27 @@ export const SummitLoungeModal: React.FC<SummitLoungeModalProps> = ({
       {/* Moderator / Topic Prompt Input */}
       <form
         onSubmit={handleTopicSubmit}
-        className="px-4 py-3 border-t border-slate-800 bg-slate-900/60 shrink-0"
+        className="px-4 py-3 border-t border-slate-800 bg-slate-900/60 space-y-2 shrink-0"
       >
+        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+          {[
+            'Green Cards & Borders',
+            'Cultural Mixing',
+            'Staff Dominance & Packs',
+            'Share Tier 7–8 Tech',
+            'Trade & Peace',
+          ].map((chip) => (
+            <button
+              key={chip}
+              type="button"
+              disabled={!sessionActive || loadingTurn}
+              onClick={() => onNextTurn(chip)}
+              className="px-2 py-1 rounded-md bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-[10px] font-medium text-slate-200 whitespace-nowrap shrink-0 disabled:opacity-45 transition-colors"
+            >
+              {chip}
+            </button>
+          ))}
+        </div>
         <div className="flex items-center gap-1.5">
           <input
             type="text"

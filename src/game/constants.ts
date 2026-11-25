@@ -1,4 +1,4 @@
-import { GovernmentType, Ideology, TaxRate, UnitTrait } from './types';
+import { BorderPolicy, CultureTrait, GovernmentType, Ideology, NationCulture, PropType, TaxRate, UnitTrait } from './types';
 
 export const GRID_W = 240;
 export const GRID_H = 180;
@@ -166,4 +166,150 @@ export const WEAPON_LABELS: Record<string, string> = {
   rail_cannon: 'Rail-Nail Cannon',
   arc_caster: 'Arc-Barcode Caster',
 };
+
+export interface CultureSeed {
+  name: string;
+  traits: CultureTrait[];
+}
+
+export const HUMAN_CULTURES: CultureSeed[] = [
+  { name: 'Flatpack Folk', traits: ['Flatpack Craft', 'Open-Aisle Exchange'] },
+  { name: 'Meatball Epicureans', traits: ['Meatball Hospitality', 'Open-Aisle Exchange'] },
+  { name: 'Aisle-9 Pioneers', traits: ['Aisle Barricaders', 'Flatpack Craft'] },
+  { name: 'Showroom Artisans', traits: ['Catalog Scholars', 'Meatball Hospitality'] },
+  { name: 'Pallet Nomads', traits: ['Open-Aisle Exchange', 'Aisle Barricaders'] },
+  { name: 'Bistro Guildsmen', traits: ['Meatball Hospitality', 'Catalog Scholars'] },
+  { name: 'Checkout Freeholders', traits: ['Flatpack Craft', 'Catalog Scholars'] },
+];
+
+export const STAFF_CULTURES: CultureSeed[] = [
+  { name: 'Yellow-Shirt Protocol', traits: ['Uniform Protocol', 'Closing-Bell Discipline'] },
+  { name: 'Closing-Bell Orthodoxy', traits: ['Closing-Bell Discipline', 'Inventory Vigilance'] },
+  { name: 'Inventory Syndicate', traits: ['Inventory Vigilance', 'Fluorescent Order'] },
+  { name: 'Fluorescent Directorate', traits: ['Fluorescent Order', 'Uniform Protocol'] },
+  { name: 'Shift-Zero Collective', traits: ['Uniform Protocol', 'Inventory Vigilance'] },
+];
+
+export const CULTURE_TRAIT_INFO: Record<CultureTrait, string> = {
+  'Flatpack Craft': '+12% Scrap & Wrench output',
+  'Meatball Hospitality': '+Happiness & faster food recovery',
+  'Aisle Barricaders': '+20% Barricade & Gate durability',
+  'Catalog Scholars': '+15% Research speed',
+  'Open-Aisle Exchange': '+Trade Cart speed & visitor goodwill',
+  'Uniform Protocol': '+15% Staff citizen HP & discipline',
+  'Closing-Bell Discipline': '+Border vigilance & guard patrol focus',
+  'Inventory Vigilance': '+Faster Green Card screening & security',
+  'Fluorescent Order': '+15% Tech Lab & lighting efficiency',
+  'Syncretic Harmony': '+8% Happiness & cross-species trade bonus',
+};
+
+export const BORDER_POLICY_INFO: Record<BorderPolicy, { label: string; short: string; color: string }> = {
+  'Open Aisles': {
+    label: 'Open Aisles',
+    short: 'Visitors & migrants enter freely without Green Card checks.',
+    color: '#34d399',
+  },
+  'Green Card': {
+    label: 'Green Card',
+    short: 'Guards check border crossings & issue Green Cards to trusted arrivals.',
+    color: '#22c55e',
+  },
+  'Strict Inspection': {
+    label: 'Strict Inspection',
+    short: 'Only Green Card holders & Union allies may cross; others turned back.',
+    color: '#f59e0b',
+  },
+  Lockdown: {
+    label: 'Lockdown',
+    short: 'Gates sealed to all non-citizens & non-Union foreigners.',
+    color: '#ef4444',
+  },
+};
+
+export function createInitialCulture(
+  species: 'human' | 'staff',
+  seedIndex: number,
+  initialPolicy?: BorderPolicy
+): NationCulture {
+  const pool = species === 'staff' ? STAFF_CULTURES : HUMAN_CULTURES;
+  const pick = pool[Math.abs(seedIndex) % pool.length];
+  return {
+    name: pick.name,
+    primaryCulture: pick.name,
+    originSpecies: species,
+    traits: [...pick.traits],
+    composition: { [pick.name]: 100 },
+    mixingScore: 0,
+    mixedWith: [],
+    borderPolicy: initialPolicy ?? (species === 'staff' ? 'Green Card' : 'Open Aisles'),
+    borderVigilance: species === 'staff' ? 35 : 10,
+    greenCardsIssued: 0,
+    borderChecks: 0,
+    turnedBackCount: 0,
+  };
+}
+
+export function getBuildingDisplayMeta(
+  prop: PropType,
+  isStaff?: boolean
+): { name: string; subtitle: string; icon: string } {
+  if (isStaff) {
+    switch (prop) {
+      case PropType.CHECKOUT_FLAG:
+        return { name: 'Directorate Beacon', subtitle: 'Staff Realm Command Hub', icon: '🟨' };
+      case PropType.MATTRESS_HUT:
+        return { name: 'Breakroom Pod', subtitle: 'Modular Staff Quarters (+Cap)', icon: '🛏️' };
+      case PropType.BISTRO:
+        return { name: 'Staff Canteen', subtitle: 'Corporate Ration Mess (+Food)', icon: '🍽️' };
+      case PropType.WORKSHOP:
+        return { name: 'Freight Bay', subtitle: 'Pallet & Wrench Maintenance', icon: '🔧' };
+      case PropType.ARCHIVE:
+        return { name: 'Inventory Hub', subtitle: 'Stock Ledger & Protocol Hall', icon: '📋' };
+      case PropType.CART_DEPOT:
+        return { name: 'Receiving Dock', subtitle: 'Cargo Cart Dispatch Bay', icon: '📦' };
+      case PropType.TECH_LAB:
+        return { name: 'PA Command Lab', subtitle: 'Fluorescent Signal R&D', icon: '📡' };
+      case PropType.WATCHTOWER:
+        return { name: 'Security Pylon', subtitle: 'Automated Surveillance Turret', icon: '🗼' };
+      case PropType.SPOTLIGHT:
+        return { name: 'Fluorescent Tower', subtitle: 'High-Output Aisle Beacon', icon: '💡' };
+      case PropType.BARRICADE_WALL:
+        return { name: 'Security Barrier', subtitle: 'Hazard-Striped Perimeter Wall', icon: '🚧' };
+      case PropType.BARRICADE_GATE:
+        return { name: 'Badge Security Gate', subtitle: 'Green Card Checkpoint Gate', icon: '🪪' };
+      case PropType.ESCALATOR:
+        return { name: 'Freight Escalator', subtitle: 'Express Transit Shaft', icon: '🪜' };
+      default:
+        return { name: 'Facility Prop', subtitle: 'Staff Structure', icon: '🏢' };
+    }
+  }
+  switch (prop) {
+    case PropType.CHECKOUT_FLAG:
+      return { name: 'Checkout Flag', subtitle: 'Capital Citadel & Banner', icon: '🏁' };
+    case PropType.MATTRESS_HUT:
+      return { name: 'Mattress Hut', subtitle: 'Survivor Dwelling (+Cap)', icon: '🛏️' };
+    case PropType.BISTRO:
+      return { name: 'Meatball Bistro', subtitle: 'Hot Kitchen & Dining Hall', icon: '🍝' };
+    case PropType.WORKSHOP:
+      return { name: 'Wrench Workshop', subtitle: 'Forge & Firearm Craft', icon: '🔨' };
+    case PropType.ARCHIVE:
+      return { name: 'Billy Archive', subtitle: 'Catalog Library & Morale', icon: '📚' };
+    case PropType.CART_DEPOT:
+      return { name: 'Cart Depot', subtitle: 'Trade Caravan Staging', icon: '🛒' };
+    case PropType.TECH_LAB:
+      return { name: 'SCP Tech Lab', subtitle: 'Anomalous Research Lab', icon: '🔬' };
+    case PropType.WATCHTOWER:
+      return { name: 'Watchtower', subtitle: 'Fortified Defense Tower', icon: '🏰' };
+    case PropType.SPOTLIGHT:
+      return { name: 'Spotlight', subtitle: 'Anti-Staff Light Beacon', icon: '🔦' };
+    case PropType.BARRICADE_WALL:
+      return { name: 'Pallet Barricade', subtitle: 'Fortified Furniture Wall', icon: '🧱' };
+    case PropType.BARRICADE_GATE:
+      return { name: 'Border Gate', subtitle: 'Checkpoint Entrance', icon: '🚪' };
+    case PropType.ESCALATOR:
+      return { name: 'Escalator Hub', subtitle: 'Fast-Travel Link', icon: '🪜' };
+    default:
+      return { name: 'Structure', subtitle: 'Kingdom Building', icon: '🏗️' };
+  }
+}
 

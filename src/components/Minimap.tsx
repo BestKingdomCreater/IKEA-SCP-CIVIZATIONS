@@ -18,7 +18,7 @@ export const Minimap: React.FC<MinimapProps> = ({ engineRef, viewSize }) => {
     let frameCounter = 0;
     const draw = () => {
       frameCounter++;
-      if (frameCounter % 3 !== 1) {
+      if (frameCounter % 5 !== 1) {
         raf = requestAnimationFrame(draw);
         return;
       }
